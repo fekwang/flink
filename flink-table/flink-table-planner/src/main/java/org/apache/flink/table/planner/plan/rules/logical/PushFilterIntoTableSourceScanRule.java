@@ -78,7 +78,7 @@ public class PushFilterIntoTableSourceScanRule extends PushFilterIntoSourceScanR
 
         RelBuilder relBuilder = call.builder();
         Tuple2<RexNode[], RexNode[]> extractedPredicates =
-                extractPredicates(
+                FlinkRexUtil.extractPredicates(
                         filter.getInput().getRowType().getFieldNames().toArray(new String[0]),
                         filter.getCondition(),
                         scan,
@@ -110,7 +110,10 @@ public class PushFilterIntoTableSourceScanRule extends PushFilterIntoSourceScanR
                     createRemainingCondition(
                             relBuilder, result.getRemainingFilters(), unconvertedPredicates);
             RexNode simplifiedRemainingCondition =
-                    FlinkRexUtil.simplify(relBuilder.getRexBuilder(), remainingCondition);
+                    FlinkRexUtil.simplify(
+                            relBuilder.getRexBuilder(),
+                            remainingCondition,
+                            filter.getCluster().getPlanner().getExecutor());
             Filter newFilter =
                     filter.copy(filter.getTraitSet(), newScan, simplifiedRemainingCondition);
             call.transformTo(newFilter);

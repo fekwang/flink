@@ -18,7 +18,8 @@
 
 package org.apache.flink.table.runtime.operators.rank;
 
-import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.functions.OpenContext;
+import org.apache.flink.api.common.serialization.SerializerConfigImpl;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.state.StateTtlConfig;
@@ -27,21 +28,19 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.table.data.conversion.DataStructureConverter;
+import org.apache.flink.table.data.conversion.RowRowConverter;
 import org.apache.flink.table.runtime.generated.GeneratedRecordComparator;
 import org.apache.flink.table.runtime.keyselector.RowDataKeySelector;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
 import org.apache.flink.util.Collector;
 
-import org.apache.flink.shaded.guava30.com.google.common.cache.Cache;
-import org.apache.flink.shaded.guava30.com.google.common.cache.CacheBuilder;
-import org.apache.flink.shaded.guava30.com.google.common.cache.RemovalCause;
-import org.apache.flink.shaded.guava30.com.google.common.cache.RemovalListener;
-import org.apache.flink.shaded.guava30.com.google.common.cache.RemovalNotification;
+import org.apache.flink.shaded.guava32.com.google.common.cache.Cache;
+import org.apache.flink.shaded.guava32.com.google.common.cache.CacheBuilder;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -74,6 +73,13 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
 
     private final InternalTypeInfo<RowData> rowKeyType;
     private final long cacheSize;
+
+    // flag to skip records with non-exist error instead to fail, true by default.
+    private final boolean lenient = true;
+
+    // data converter for logging only.
+    private transient DataStructureConverter rowConverter;
+    private transient DataStructureConverter sortKeyConverter;
 
     // a map state stores mapping from row key to record which is in topN
     // in tuple2, f0 is the record row, f1 is the index in the list of the same sort_key
@@ -114,29 +120,39 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
                 outputRankNumber);
         this.rowKeyType = rowKeySelector.getProducedType();
         this.cacheSize = cacheSize;
-        this.inputRowSer = inputRowType.createSerializer(new ExecutionConfig());
+        this.inputRowSer = inputRowType.createSerializer(new SerializerConfigImpl());
         this.rowKeySelector = rowKeySelector;
     }
 
     @Override
-    public void open(Configuration parameters) throws Exception {
-        super.open(parameters);
+    public void open(OpenContext openContext) throws Exception {
+        super.open(openContext);
         int lruCacheSize = Math.max(1, (int) (cacheSize / getDefaultTopNSize()));
         CacheBuilder<Object, Object> cacheBuilder = CacheBuilder.newBuilder();
         if (ttlConfig.isEnabled()) {
             cacheBuilder.expireAfterWrite(
-                    ttlConfig.getTtl().toMilliseconds(), TimeUnit.MILLISECONDS);
+                    ttlConfig.getTimeToLive().toMillis(), TimeUnit.MILLISECONDS);
         }
         kvRowKeyMap =
                 cacheBuilder
                         .maximumSize(lruCacheSize)
-                        .removalListener(new CacheRemovalListener())
+                        .removalListener(
+                                new TopNBufferCacheRemovalListener<>(
+                                        keyContext, this::flushBufferToState))
                         .build();
 
         LOG.info(
                 "Top{} operator is using LRU caches key-size: {}",
                 getDefaultTopNSize(),
                 lruCacheSize);
+
+        this.rowConverter = RowRowConverter.create(inputRowType.getDataType());
+        this.sortKeyConverter =
+                RowRowConverter.create(
+                        ((RowDataKeySelector) sortKeySelector).getProducedType().getDataType());
+
+        rowConverter.open(getRuntimeContext().getUserCodeClassLoader());
+        sortKeyConverter.open(getRuntimeContext().getUserCodeClassLoader());
 
         TupleTypeInfo<Tuple2<RowData, Integer>> valueTypeInfo =
                 new TupleTypeInfo<>(inputRowType, Types.INT);
@@ -175,9 +191,8 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
         for (Map.Entry<RowData, Tuple2<TopNBuffer, Map<RowData, RankRow>>> entry :
                 kvRowKeyMap.asMap().entrySet()) {
             RowData partitionKey = entry.getKey();
-            Map<RowData, RankRow> currentRowKeyMap = entry.getValue().f1;
             keyContext.setCurrentKey(partitionKey);
-            flushBufferToState(currentRowKeyMap);
+            flushBufferToState(entry.getValue());
         }
     }
 
@@ -249,7 +264,8 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
             // the new sort key must be higher than old sort key, this is guaranteed by rules
             RankRow oldRow = rowKeyMap.get(rowKey);
             RowData oldSortKey = sortKeySelector.getKey(oldRow.row);
-            if (oldSortKey.equals(sortKey)) {
+            int compare = sortKeyComparator.compare(sortKey, oldSortKey);
+            if (compare == 0) {
                 // sort key is not changed, so the rank is the same, only output the row
                 Tuple2<Integer, Integer> rankAndInnerRank = rowNumber(sortKey, rowKey, buffer);
                 int rank = rankAndInnerRank.f0;
@@ -258,20 +274,47 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
                 collectUpdateBefore(out, oldRow.row, rank); // retract old record
                 collectUpdateAfter(out, inputRow, rank);
                 return;
+            } else {
+                Tuple2<Integer, Integer> oldRankAndInnerRank =
+                        rowNumber(oldSortKey, rowKey, buffer);
+                int oldRank = oldRankAndInnerRank.f0;
+                // remove old sort key
+                buffer.remove(oldSortKey, rowKey);
+                // add new sort key
+                int size = buffer.put(sortKey, rowKey);
+                rowKeyMap.put(rowKey, new RankRow(inputRowSer.copy(inputRow), size, true));
+                // update inner rank of records under the old sort key
+                updateInnerRank(oldSortKey);
+
+                if (compare < 0) {
+                    // sortKey is higher than oldSortKey
+                    emitRecordsWithRowNumber(sortKey, inputRow, out, oldSortKey, oldRow, oldRank);
+                } else {
+                    String inputRowStr = rowConverter.toExternal(inputRow).toString();
+                    String errorMsg =
+                            String.format(
+                                    "The input retract record:{%s}'s sort key: %s is lower than old"
+                                            + " sort key: %s, this break the monotonicity on sort key field"
+                                            + " which is guaranteed by the sql semantic. It's highly "
+                                            + "possible upstream stateful operator has shorter state ttl "
+                                            + "than the stream records is that cause the staled record "
+                                            + "cleared by state ttl.",
+                                    inputRowStr,
+                                    sortKeyConverter.toExternal(sortKey).toString(),
+                                    sortKeyConverter.toExternal(oldSortKey).toString());
+                    if (lenient) {
+                        LOG.warn(errorMsg);
+                        Tuple2<Integer, Integer> newRankAndInnerRank =
+                                rowNumber(sortKey, rowKey, buffer);
+                        int newRank = newRankAndInnerRank.f0;
+                        // affect rank range: [oldRank, newRank]
+                        emitRecordsWithRowNumberIgnoreStateError(
+                                inputRow, newRank, oldRow, oldRank, out);
+                    } else {
+                        throw new RuntimeException(errorMsg);
+                    }
+                }
             }
-
-            Tuple2<Integer, Integer> oldRankAndInnerRank = rowNumber(oldSortKey, rowKey, buffer);
-            int oldRank = oldRankAndInnerRank.f0;
-            // remove old sort key
-            buffer.remove(oldSortKey, rowKey);
-            // add new sort key
-            int size = buffer.put(sortKey, rowKey);
-            rowKeyMap.put(rowKey, new RankRow(inputRowSer.copy(inputRow), size, true));
-            // update inner rank of records under the old sort key
-            updateInnerRank(oldSortKey);
-
-            // emit records
-            emitRecordsWithRowNumber(sortKey, inputRow, out, oldSortKey, oldRow, oldRank);
         } else if (checkSortKeyInBufferRange(sortKey, buffer)) {
             // it is a new record but is in the topN, insert sort key into buffer
             int size = buffer.put(sortKey, rowKey);
@@ -310,6 +353,37 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
                 rowKey);
         throw new RuntimeException(
                 "Failed to find the sortKey, rowkey in the buffer. This should never happen");
+    }
+
+    private void emitRecordsWithRowNumberIgnoreStateError(
+            RowData newRow, int newRank, RankRow oldRow, int oldRank, Collector<RowData> out) {
+        Iterator<Map.Entry<RowData, Collection<RowData>>> iterator = buffer.entrySet().iterator();
+        int currentRank = 0;
+        RowData currentRow = null;
+
+        // emit UB of the old row first
+        collectUpdateBefore(out, oldRow.row, oldRank);
+        // update all other affected rank rows
+        affected:
+        while (iterator.hasNext()) {
+            Map.Entry<RowData, Collection<RowData>> entry = iterator.next();
+            Collection<RowData> rowKeys = entry.getValue();
+            Iterator<RowData> rowKeyIter = rowKeys.iterator();
+            while (rowKeyIter.hasNext()) {
+                RowData rowKey = rowKeyIter.next();
+                currentRank += 1;
+                currentRow = rowKeyMap.get(rowKey).row;
+                if (currentRank == newRank) {
+                    break affected;
+                }
+                if (oldRank <= currentRank) {
+                    collectUpdateBefore(out, currentRow, currentRank + 1);
+                    collectUpdateAfter(out, currentRow, currentRank);
+                }
+            }
+        }
+        // at last emit UA of the new row
+        collectUpdateAfter(out, newRow, newRank);
     }
 
     private void emitRecordsWithRowNumber(RowData sortKey, RowData inputRow, Collector<RowData> out)
@@ -467,7 +541,9 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
         }
     }
 
-    private void flushBufferToState(Map<RowData, RankRow> curRowKeyMap) throws Exception {
+    private void flushBufferToState(Tuple2<TopNBuffer, Map<RowData, RankRow>> bufferEntry)
+            throws Exception {
+        Map<RowData, RankRow> curRowKeyMap = bufferEntry.f1;
         for (Map.Entry<RowData, RankRow> entry : curRowKeyMap.entrySet()) {
             RowData key = entry.getKey();
             RankRow rankRow = entry.getValue();
@@ -492,37 +568,6 @@ public class UpdatableTopNFunction extends AbstractTopNFunction implements Check
                     row.dirty = true;
                 }
                 innerRank += 1;
-            }
-        }
-    }
-
-    private class CacheRemovalListener
-            implements RemovalListener<RowData, Tuple2<TopNBuffer, Map<RowData, RankRow>>> {
-
-        @Override
-        public void onRemoval(
-                RemovalNotification<RowData, Tuple2<TopNBuffer, Map<RowData, RankRow>>>
-                        notification) {
-            if (notification.getCause() != RemovalCause.SIZE) {
-                // Don't flush values to state if cause is ttl expired
-                return;
-            }
-
-            RowData partitionKey = notification.getKey();
-            Tuple2<TopNBuffer, Map<RowData, RankRow>> value = notification.getValue();
-            if (partitionKey == null || value == null) {
-                return;
-            }
-
-            RowData previousKey = (RowData) keyContext.getCurrentKey();
-            keyContext.setCurrentKey(partitionKey);
-            try {
-                flushBufferToState(value.f1);
-            } catch (Throwable e) {
-                LOG.error("Fail to synchronize state!", e);
-                throw new RuntimeException(e);
-            } finally {
-                keyContext.setCurrentKey(previousKey);
             }
         }
     }

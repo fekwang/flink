@@ -36,11 +36,19 @@ class EnvironmentAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTest
     @classmethod
     def excluded_methods(cls):
         # getCompletionHints has been deprecated. It will be removed in the next release.
-        # TODO add TableEnvironment#create method with EnvironmentSettings as a parameter
         return {
             'getCompletionHints',
             'fromValues',
-            'create'}
+            # See FLINK-25986
+            'loadPlan',
+            'compilePlanSql',
+            'executePlan',
+            'explainPlan',
+            # See FLINK-32647
+            'createCatalog',
+            'registerFunction',
+            'scan',
+            'registerTable'}
 
     @classmethod
     def java_method_name(cls, python_method_name):

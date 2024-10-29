@@ -18,6 +18,7 @@
 
 package org.apache.flink.connector.base.source.hybrid;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.connector.source.Boundedness;
@@ -32,9 +33,7 @@ import org.apache.flink.util.Preconditions;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Hybrid source that switches underlying sources based on configured source chain.
@@ -43,7 +42,7 @@ import java.util.Map;
  *
  * <pre>{@code
  * FileSource<String> fileSource =
- *   FileSource.forRecordStreamFormat(new TextLineFormat(), Path.fromLocalFile(testDir)).build();
+ *   FileSource.forRecordStreamFormat(new TextLineInputFormat(), Path.fromLocalFile(testDir)).build();
  * KafkaSource<String> kafkaSource =
  *           KafkaSource.<String>builder()
  *                   .setBootstrapServers("localhost:9092")
@@ -91,14 +90,11 @@ import java.util.Map;
 public class HybridSource<T> implements Source<T, HybridSourceSplit, HybridSourceEnumeratorState> {
 
     private final List<SourceListEntry> sources;
-    // sources are populated per subtask at switch time
-    private final Map<Integer, Source> switchedSources;
 
     /** Protected for subclass, use {@link #builder(Source)} to construct source. */
     protected HybridSource(List<SourceListEntry> sources) {
         Preconditions.checkArgument(!sources.isEmpty());
         this.sources = sources;
-        this.switchedSources = new HashMap<>(sources.size());
     }
 
     /** Builder for {@link HybridSource}. */
@@ -113,40 +109,41 @@ public class HybridSource<T> implements Source<T, HybridSourceSplit, HybridSourc
         return sources.get(sources.size() - 1).boundedness;
     }
 
+    @Internal
     @Override
     public SourceReader<T, HybridSourceSplit> createReader(SourceReaderContext readerContext)
             throws Exception {
-        return new HybridSourceReader(readerContext, switchedSources);
+        return new HybridSourceReader(readerContext);
     }
 
+    @Internal
     @Override
     public SplitEnumerator<HybridSourceSplit, HybridSourceEnumeratorState> createEnumerator(
             SplitEnumeratorContext<HybridSourceSplit> enumContext) {
-        return new HybridSourceSplitEnumerator(enumContext, sources, 0, switchedSources, null);
+        return new HybridSourceSplitEnumerator(enumContext, sources, 0, null);
     }
 
+    @Internal
     @Override
     public SplitEnumerator<HybridSourceSplit, HybridSourceEnumeratorState> restoreEnumerator(
             SplitEnumeratorContext<HybridSourceSplit> enumContext,
             HybridSourceEnumeratorState checkpoint)
             throws Exception {
         return new HybridSourceSplitEnumerator(
-                enumContext,
-                sources,
-                checkpoint.getCurrentSourceIndex(),
-                switchedSources,
-                checkpoint.getWrappedState());
+                enumContext, sources, checkpoint.getCurrentSourceIndex(), checkpoint);
     }
 
+    @Internal
     @Override
     public SimpleVersionedSerializer<HybridSourceSplit> getSplitSerializer() {
-        return new HybridSourceSplitSerializer(switchedSources);
+        return new HybridSourceSplitSerializer();
     }
 
+    @Internal
     @Override
     public SimpleVersionedSerializer<HybridSourceEnumeratorState>
             getEnumeratorCheckpointSerializer() {
-        return new HybridSourceEnumeratorStateSerializer(switchedSources);
+        return new HybridSourceEnumeratorStateSerializer();
     }
 
     /**
@@ -160,6 +157,7 @@ public class HybridSource<T> implements Source<T, HybridSourceSplit, HybridSourc
      * backward compatible extension, i.e. additional information about the previous source can be
      * supplied in the future.
      */
+    @PublicEvolving
     public interface SourceSwitchContext<EnumT> {
         EnumT getPreviousEnumerator();
     }
@@ -180,6 +178,7 @@ public class HybridSource<T> implements Source<T, HybridSourceSplit, HybridSourc
      * entry point and simply wrapped into the factory, providing the benefit of validation during
      * submission.
      */
+    @PublicEvolving
     @FunctionalInterface
     public interface SourceFactory<
                     T, SourceT extends Source<T, ?, ?>, FromEnumT extends SplitEnumerator>
@@ -219,6 +218,7 @@ public class HybridSource<T> implements Source<T, HybridSourceSplit, HybridSourc
     }
 
     /** Builder for HybridSource. */
+    @PublicEvolving
     public static class HybridSourceBuilder<T, EnumT extends SplitEnumerator>
             implements Serializable {
         private final List<SourceListEntry> sources;

@@ -17,16 +17,21 @@
 
 package org.apache.flink.schema.registry.test;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
-import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
+import org.apache.flink.connector.kafka.sink.KafkaSink;
+import org.apache.flink.connector.kafka.source.KafkaSource;
+import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
+import org.apache.flink.connector.kafka.source.reader.deserializer.KafkaRecordDeserializationSchema;
 import org.apache.flink.formats.avro.registry.confluent.ConfluentRegistryAvroDeserializationSchema;
 import org.apache.flink.formats.avro.registry.confluent.ConfluentRegistryAvroSerializationSchema;
 import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaConsumer;
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
+import org.apache.flink.util.ParameterTool;
 
 import example.avro.User;
 import org.apache.avro.specific.SpecificRecordBase;
@@ -62,34 +67,53 @@ public class TestAvroConsumerConfluent {
 
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        DataStreamSource<User> input =
-                env.addSource(
-                        new FlinkKafkaConsumer<>(
-                                        parameterTool.getRequired("input-topic"),
+        String bootstrapServers = parameterTool.getRequired("bootstrap.servers");
+        KafkaSource<User> kafkaSource =
+                KafkaSource.<User>builder()
+                        .setBootstrapServers(bootstrapServers)
+                        .setGroupId(parameterTool.getRequired("group.id"))
+                        .setTopics(parameterTool.getRequired("input-topic"))
+                        .setDeserializer(
+                                KafkaRecordDeserializationSchema.valueOnly(
                                         ConfluentRegistryAvroDeserializationSchema.forSpecific(
-                                                User.class, schemaRegistryUrl),
-                                        config)
-                                .setStartFromEarliest());
+                                                User.class, schemaRegistryUrl)))
+                        .setStartingOffsets(OffsetsInitializer.earliest())
+                        .build();
+
+        DataStreamSource<User> input =
+                env.fromSource(kafkaSource, WatermarkStrategy.noWatermarks(), "Kafka Source");
 
         SingleOutputStreamOperator<String> mapToString =
                 input.map((MapFunction<User, String>) SpecificRecordBase::toString);
 
-        FlinkKafkaProducer<String> stringFlinkKafkaProducer =
-                new FlinkKafkaProducer<>(
-                        parameterTool.getRequired("output-string-topic"),
-                        new SimpleStringSchema(),
-                        config);
-        mapToString.addSink(stringFlinkKafkaProducer);
+        KafkaSink<String> stringSink =
+                KafkaSink.<String>builder()
+                        .setBootstrapServers(bootstrapServers)
+                        .setRecordSerializer(
+                                KafkaRecordSerializationSchema.builder()
+                                        .setValueSerializationSchema(new SimpleStringSchema())
+                                        .setTopic(parameterTool.getRequired("output-string-topic"))
+                                        .build())
+                        .setKafkaProducerConfig(config)
+                        .build();
+        mapToString.sinkTo((Sink) stringSink);
 
-        FlinkKafkaProducer<User> avroFlinkKafkaProducer =
-                new FlinkKafkaProducer<>(
-                        parameterTool.getRequired("output-avro-topic"),
-                        ConfluentRegistryAvroSerializationSchema.forSpecific(
-                                User.class,
-                                parameterTool.getRequired("output-subject"),
-                                schemaRegistryUrl),
-                        config);
-        input.addSink(avroFlinkKafkaProducer);
+        KafkaSink<User> avroSink =
+                KafkaSink.<User>builder()
+                        .setBootstrapServers(bootstrapServers)
+                        .setRecordSerializer(
+                                KafkaRecordSerializationSchema.builder()
+                                        .setValueSerializationSchema(
+                                                ConfluentRegistryAvroSerializationSchema
+                                                        .forSpecific(
+                                                                User.class,
+                                                                parameterTool.getRequired(
+                                                                        "output-subject"),
+                                                                schemaRegistryUrl))
+                                        .setTopic(parameterTool.getRequired("output-avro-topic"))
+                                        .build())
+                        .build();
+        input.sinkTo((Sink) avroSink);
 
         env.execute("Kafka Confluent Schema Registry AVRO Example");
     }

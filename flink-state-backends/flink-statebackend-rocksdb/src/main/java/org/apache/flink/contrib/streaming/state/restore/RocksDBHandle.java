@@ -23,16 +23,19 @@ import org.apache.flink.contrib.streaming.state.RocksDBNativeMetricMonitor;
 import org.apache.flink.contrib.streaming.state.RocksDBNativeMetricOptions;
 import org.apache.flink.contrib.streaming.state.RocksDBOperationUtils;
 import org.apache.flink.contrib.streaming.state.ttl.RocksDbTtlCompactFiltersManager;
+import org.apache.flink.core.fs.ICloseableRegistry;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.runtime.state.RegisteredStateMetaInfoBase;
 import org.apache.flink.runtime.state.metainfo.StateMetaInfoSnapshot;
 import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.IOUtils;
+import org.apache.flink.util.Preconditions;
 
 import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.DBOptions;
+import org.rocksdb.ExportImportFilesMetaData;
 import org.rocksdb.RocksDB;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,7 +58,8 @@ import static org.apache.flink.contrib.streaming.state.snapshot.RocksSnapshotUti
 
 /**
  * Utility for creating a RocksDB instance either from scratch or from restored local state. This
- * will also register {@link RocksDbKvStateInfo} when using {@link #openDB(List, List, Path)}.
+ * will also register {@link RocksDbKvStateInfo} when using {@link #openDB(List, List, Path,
+ * ICloseableRegistry)}.
  */
 class RocksDBHandle implements AutoCloseable {
 
@@ -116,7 +120,8 @@ class RocksDBHandle implements AutoCloseable {
     void openDB(
             @Nonnull List<ColumnFamilyDescriptor> columnFamilyDescriptors,
             @Nonnull List<StateMetaInfoSnapshot> stateMetaInfoSnapshots,
-            @Nonnull Path restoreSourcePath)
+            @Nonnull Path restoreSourcePath,
+            @Nonnull ICloseableRegistry cancelStreamRegistryForRestore)
             throws IOException {
         this.columnFamilyDescriptors = columnFamilyDescriptors;
         this.columnFamilyHandles = new ArrayList<>(columnFamilyDescriptors.size() + 1);
@@ -125,7 +130,9 @@ class RocksDBHandle implements AutoCloseable {
         // Register CF handlers
         for (int i = 0; i < stateMetaInfoSnapshots.size(); i++) {
             getOrRegisterStateColumnFamilyHandle(
-                    columnFamilyHandles.get(i), stateMetaInfoSnapshots.get(i));
+                    columnFamilyHandles.get(i),
+                    stateMetaInfoSnapshots.get(i),
+                    cancelStreamRegistryForRestore);
         }
     }
 
@@ -143,12 +150,15 @@ class RocksDBHandle implements AutoCloseable {
         // init native metrics monitor if configured
         nativeMetricMonitor =
                 nativeMetricOptions.isEnabled()
-                        ? new RocksDBNativeMetricMonitor(nativeMetricOptions, metricGroup, db)
+                        ? new RocksDBNativeMetricMonitor(
+                                nativeMetricOptions, metricGroup, db, dbOptions.statistics())
                         : null;
     }
 
     RocksDbKvStateInfo getOrRegisterStateColumnFamilyHandle(
-            ColumnFamilyHandle columnFamilyHandle, StateMetaInfoSnapshot stateMetaInfoSnapshot) {
+            ColumnFamilyHandle columnFamilyHandle,
+            StateMetaInfoSnapshot stateMetaInfoSnapshot,
+            ICloseableRegistry cancelStreamRegistryForRestore) {
 
         RocksDbKvStateInfo registeredStateMetaInfoEntry =
                 kvStateInformation.get(stateMetaInfoSnapshot.getName());
@@ -165,7 +175,8 @@ class RocksDBHandle implements AutoCloseable {
                                 db,
                                 columnFamilyOptionsFactory,
                                 ttlCompactFiltersManager,
-                                writeBufferManagerCapacity);
+                                writeBufferManagerCapacity,
+                                cancelStreamRegistryForRestore);
             } else {
                 registeredStateMetaInfoEntry =
                         new RocksDbKvStateInfo(columnFamilyHandle, stateMetaInfo);
@@ -182,6 +193,40 @@ class RocksDBHandle implements AutoCloseable {
         }
 
         return registeredStateMetaInfoEntry;
+    }
+
+    /**
+     * Registers a new column family and imports data from the given export.
+     *
+     * @param stateMetaInfoKey info about the state to create.
+     * @param cfMetaDataList the data to import.
+     */
+    void registerStateColumnFamilyHandleWithImport(
+            RegisteredStateMetaInfoBase.Key stateMetaInfoKey,
+            List<ExportImportFilesMetaData> cfMetaDataList,
+            ICloseableRegistry cancelStreamRegistryForRestore) {
+
+        RegisteredStateMetaInfoBase stateMetaInfo =
+                stateMetaInfoKey.getRegisteredStateMetaInfoBase();
+
+        Preconditions.checkState(
+                !kvStateInformation.containsKey(stateMetaInfo.getName()),
+                "Error: stateMetaInfo.name is not unique:" + stateMetaInfo.getName());
+
+        RocksDbKvStateInfo stateInfo =
+                RocksDBOperationUtils.createStateInfo(
+                        stateMetaInfo,
+                        db,
+                        columnFamilyOptionsFactory,
+                        ttlCompactFiltersManager,
+                        writeBufferManagerCapacity,
+                        cfMetaDataList,
+                        cancelStreamRegistryForRestore);
+
+        RocksDBOperationUtils.registerKvStateInformation(
+                kvStateInformation, nativeMetricMonitor, stateMetaInfo.getName(), stateInfo);
+
+        columnFamilyHandles.add(stateInfo.columnFamilyHandle);
     }
 
     /**
@@ -202,12 +247,27 @@ class RocksDBHandle implements AutoCloseable {
             final String fileName = file.getFileName().toString();
             final Path targetFile = instanceRocksDBDirectory.resolve(fileName);
             if (fileName.endsWith(SST_FILE_SUFFIX)) {
-                // hardlink'ing the immutable sst-files.
-                Files.createLink(targetFile, file);
-            } else {
-                // true copy for all other files.
-                Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
+                try {
+                    // hardlink'ing the immutable sst-files.
+                    Files.createLink(targetFile, file);
+                    continue;
+                } catch (IOException ioe) {
+                    final String logMessage =
+                            String.format(
+                                    "Could not hard link sst file %s. Trying to copy it over. This might "
+                                            + "increase the recovery time. In order to avoid this, configure "
+                                            + "RocksDB's working directory and the local state directory to be on the same volume.",
+                                    fileName);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug(logMessage, ioe);
+                    } else {
+                        logger.info(logMessage);
+                    }
+                }
             }
+
+            // true copy for all other files and files that could not be hard linked.
+            Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 

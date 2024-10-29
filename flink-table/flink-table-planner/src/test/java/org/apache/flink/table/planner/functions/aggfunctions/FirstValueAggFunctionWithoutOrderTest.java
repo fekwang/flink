@@ -24,6 +24,7 @@ import org.apache.flink.table.data.DecimalDataUtils;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.functions.AggregateFunction;
+import org.apache.flink.table.runtime.functions.aggregate.FirstValueAggFunction;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.BooleanType;
 import org.apache.flink.table.types.logical.DecimalType;
@@ -34,8 +35,7 @@ import org.apache.flink.table.types.logical.TinyIntType;
 import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.testutils.serialization.types.ShortType;
 
-import org.junit.experimental.runners.Enclosed;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Nested;
 
 import java.util.Arrays;
 import java.util.List;
@@ -44,8 +44,7 @@ import java.util.List;
  * Test case for built-in FIRST_VALUE aggregate function. This class tests `accumulate` method
  * without order argument.
  */
-@RunWith(Enclosed.class)
-public final class FirstValueAggFunctionWithoutOrderTest {
+final class FirstValueAggFunctionWithoutOrderTest {
 
     // --------------------------------------------------------------------------------------------
     // Test sets for a particular type being aggregated
@@ -55,7 +54,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     // --------------------------------------------------------------------------------------------
 
     /** Test for {@link TinyIntType}. */
-    public static final class ByteFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class ByteFirstValueAggFunctionWithoutOrderTest
             extends NumberFirstValueAggFunctionWithoutOrderTest<Byte> {
 
         @Override
@@ -70,7 +70,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link ShortType}. */
-    public static final class ShortFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class ShortFirstValueAggFunctionWithoutOrderTest
             extends NumberFirstValueAggFunctionWithoutOrderTest<Short> {
 
         @Override
@@ -85,7 +86,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link IntType}. */
-    public static final class IntFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class IntFirstValueAggFunctionWithoutOrderTest
             extends NumberFirstValueAggFunctionWithoutOrderTest<Integer> {
 
         @Override
@@ -100,7 +102,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link BigIntType}. */
-    public static final class LongFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class LongFirstValueAggFunctionWithoutOrderTest
             extends NumberFirstValueAggFunctionWithoutOrderTest<Long> {
 
         @Override
@@ -115,7 +118,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link FloatType}. */
-    public static final class FloatFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class FloatFirstValueAggFunctionWithoutOrderTest
             extends NumberFirstValueAggFunctionWithoutOrderTest<Float> {
 
         @Override
@@ -130,7 +134,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link DoubleType}. */
-    public static final class DoubleFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class DoubleFirstValueAggFunctionWithoutOrderTest
             extends NumberFirstValueAggFunctionWithoutOrderTest<Double> {
 
         @Override
@@ -145,7 +150,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link BooleanType}. */
-    public static final class BooleanFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class BooleanFirstValueAggFunctionWithoutOrderTest
             extends FirstValueAggFunctionWithoutOrderTestBase<Boolean> {
 
         @Override
@@ -170,7 +176,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link DecimalType}. */
-    public static final class DecimalFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class DecimalFirstValueAggFunctionWithoutOrderTest
             extends FirstValueAggFunctionWithoutOrderTestBase<DecimalData> {
 
         private int precision = 20;
@@ -209,7 +216,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test for {@link VarCharType}. */
-    public static final class StringFirstValueAggFunctionWithoutOrderTest
+    @Nested
+    final class StringFirstValueAggFunctionWithoutOrderTest
             extends FirstValueAggFunctionWithoutOrderTestBase<StringData> {
 
         @Override
@@ -251,8 +259,8 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     // --------------------------------------------------------------------------------------------
 
     /** Test base for {@link FirstValueAggFunction} without order. */
-    public abstract static class FirstValueAggFunctionWithoutOrderTestBase<T>
-            extends AggFunctionTestBase<T, RowData> {
+    abstract static class FirstValueAggFunctionWithoutOrderTestBase<T>
+            extends AggFunctionTestBase<T, T, RowData> {
 
         @Override
         protected Class<?> getAccClass() {
@@ -261,7 +269,7 @@ public final class FirstValueAggFunctionWithoutOrderTest {
     }
 
     /** Test base for {@link FirstValueAggFunction} with number types. */
-    public abstract static class NumberFirstValueAggFunctionWithoutOrderTest<T>
+    abstract static class NumberFirstValueAggFunctionWithoutOrderTest<T>
             extends FirstValueAggFunctionWithoutOrderTestBase<T> {
 
         protected abstract T getValue(String v);

@@ -44,6 +44,8 @@ Avro Schema Registry 格式只能与 [Apache Kafka SQL 连接器]({{< ref "docs/
 
 {{< sql_download_table "avro-confluent" >}}
 
+For Maven, SBT, Gradle, or other build automation tools, please also ensure that Confluent's maven repository at `https://packages.confluent.io/maven/` is configured in your project's build files.
+
 如何创建使用 Avro-Confluent 格式的表
 ----------------
 
@@ -256,6 +258,13 @@ Format 参数
             <td style="word-wrap: break-word;">(none)</td>
             <td>String</td>
             <td>Password for SSL truststore</td>
+        </tr>
+        <tr>
+            <td><h5>avro-confluent.schema</h5></td>
+            <td>optional</td>
+            <td style="word-wrap: break-word;">(none)</td>
+            <td>String</td>
+            <td>The schema registered or to be registered in the Confluent Schema Registry. If no schema is provided Flink converts the table schema to avro schema. The schema provided must match the table schema.</td>
         </tr>
         <tr>
             <td><h5>avro-confluent.subject</h5></td>

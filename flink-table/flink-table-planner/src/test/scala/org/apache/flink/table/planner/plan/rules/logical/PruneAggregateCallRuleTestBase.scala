@@ -18,23 +18,22 @@
 package org.apache.flink.table.planner.plan.rules.logical
 
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api._
+import org.apache.flink.table.legacy.api.Types
 import org.apache.flink.table.planner.plan.stats.FlinkStatistic
 import org.apache.flink.table.planner.utils.{BatchTableTestUtil, TableTestBase}
 
 import com.google.common.collect.ImmutableSet
-import org.junit.{Before, Test}
+import org.junit.jupiter.api.{BeforeEach, Test}
 
-/**
-  * Base test class for [[PruneAggregateCallRule]].
-  */
+/** Base test class for [[PruneAggregateCallRule]]. */
 abstract class PruneAggregateCallRuleTestBase extends TableTestBase {
   protected val util: BatchTableTestUtil = batchTestUtil()
 
-  @Before
+  @BeforeEach
   def setup(): Unit = {
-    util.addTableSource("T1",
+    util.addTableSource(
+      "T1",
       Array[TypeInformation[_]](Types.INT, Types.INT, Types.STRING, Types.INT),
       Array("a1", "b1", "c1", "d1"),
       FlinkStatistic.builder().uniqueKeys(ImmutableSet.of(ImmutableSet.of("a1"))).build()

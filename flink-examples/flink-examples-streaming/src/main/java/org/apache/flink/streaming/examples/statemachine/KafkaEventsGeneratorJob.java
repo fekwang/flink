@@ -18,11 +18,19 @@
 
 package org.apache.flink.streaming.examples.statemachine;
 
-import org.apache.flink.api.java.utils.ParameterTool;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.typeinfo.TypeInformation;
+import org.apache.flink.api.connector.sink2.Sink;
+import org.apache.flink.api.connector.source.util.ratelimit.RateLimiterStrategy;
+import org.apache.flink.connector.datagen.source.DataGeneratorSource;
+import org.apache.flink.connector.datagen.source.GeneratorFunction;
+import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
+import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.connectors.kafka.FlinkKafkaProducer;
-import org.apache.flink.streaming.examples.statemachine.generator.EventsGeneratorSource;
-import org.apache.flink.streaming.examples.statemachine.kafka.EventDeSerializer;
+import org.apache.flink.streaming.examples.statemachine.event.Event;
+import org.apache.flink.streaming.examples.statemachine.generator.EventsGeneratorFunction;
+import org.apache.flink.streaming.examples.statemachine.kafka.EventDeSerializationSchema;
+import org.apache.flink.util.ParameterTool;
 
 /**
  * Job to generate input events that are written to Kafka, for the {@link StateMachineExample} job.
@@ -33,23 +41,50 @@ public class KafkaEventsGeneratorJob {
 
         final ParameterTool params = ParameterTool.fromArgs(args);
 
-        double errorRate = params.getDouble("error-rate", 0.0);
-        int sleep = params.getInt("sleep", 1);
+        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+
+        final double errorRate = params.getDouble("error-rate", 0.0);
+        final int sleep = params.getInt("sleep", 1);
+        final double recordsPerSecond =
+                params.getDouble("rps", rpsFromSleep(sleep, env.getParallelism()));
+        System.out.printf(
+                "Generating events to Kafka with standalone source with error rate %f and %.1f records per second\n",
+                errorRate, recordsPerSecond);
+        System.out.println();
 
         String kafkaTopic = params.get("kafka-topic");
         String brokers = params.get("brokers", "localhost:9092");
 
-        System.out.printf(
-                "Generating events to Kafka with standalone source with error rate %f and sleep delay %s millis\n",
-                errorRate, sleep);
-        System.out.println();
+        GeneratorFunction<Long, Event> generatorFunction = new EventsGeneratorFunction(errorRate);
+        DataGeneratorSource<Event> eventGeneratorSource =
+                new DataGeneratorSource<>(
+                        generatorFunction,
+                        Long.MAX_VALUE,
+                        RateLimiterStrategy.perSecond(recordsPerSecond),
+                        TypeInformation.of(Event.class));
 
-        final StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
-        env.addSource(new EventsGeneratorSource(errorRate, sleep))
-                .addSink(new FlinkKafkaProducer<>(brokers, kafkaTopic, new EventDeSerializer()));
+        env.fromSource(
+                        eventGeneratorSource,
+                        WatermarkStrategy.noWatermarks(),
+                        "Events Generator Source")
+                .sinkTo(
+                        (Sink)
+                                KafkaSink.<Event>builder()
+                                        .setBootstrapServers(brokers)
+                                        .setRecordSerializer(
+                                                KafkaRecordSerializationSchema.builder()
+                                                        .setValueSerializationSchema(
+                                                                new EventDeSerializationSchema())
+                                                        .setTopic(kafkaTopic)
+                                                        .build())
+                                        .build());
 
         // trigger program execution
         env.execute("State machine example Kafka events generator job");
+    }
+
+    // Used for backwards compatibility to convert legacy 'sleep' parameter to records per second.
+    private static double rpsFromSleep(int sleep, int parallelism) {
+        return (1000d / sleep) * parallelism;
     }
 }

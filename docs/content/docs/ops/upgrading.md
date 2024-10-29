@@ -30,6 +30,68 @@ Flink DataStream programs are typically designed to run for long periods of time
 
 This document describes how to update a Flink streaming application and how to migrate a running streaming application to a different Flink cluster.
 
+## API compatibility guarantees
+
+The classes & members of the Java/Scala APIs that are intended for users are annotated with the following stability annotations:
+* `Public`
+* `PublicEvolving`
+* `Experimental`
+
+{{< hint info>}}
+Annotations on a class also apply to all members of that class, unless otherwise annotated.
+{{< /hint >}}
+
+Any API without such an annotation is considered internal to Flink, with no guarantees being provided.
+
+An API that is `source` compatible means that code **written** against the API will continue to **compile** against a later version.  
+An API that is `binary` compatible means that code **compiled** against the API will continue to **run** against a later version.
+
+This table lists the `source` / `binary` compatibility guarantees for each annotation when upgrading to a particular release:
+
+|    Annotation    | Major release<br>(Source / Binary) | Minor release<br>(Source / Binary) | Patch release<br>(Source / Binary) |
+|:----------------:|:----------------------------------:|:----------------------------------:|:----------------------------------:|
+|     `Public`     |    {{< xmark >}}/{{< xmark >}}     |    {{< check >}}/{{< xmark >}}     |    {{< check >}}/{{< check >}}     |
+| `PublicEvolving` |    {{< xmark >}}/{{< xmark >}}     |    {{< xmark >}}/{{< xmark >}}     |    {{< check >}}/{{< check >}}     |
+|  `Experimental`  |    {{< xmark >}}/{{< xmark >}}     |    {{< xmark >}}/{{< xmark >}}     |    {{< xmark >}}/{{< xmark >}}     |
+
+{{< hint info >}}
+{{< label Example >}}
+Consider the code written against a `Public` API in 1.15.2:
+* The code can continue to run when upgrading to Flink 1.15.3 without recompiling, because patch version upgrades for `Public` APIs guarantee `binary` compatibility.
+* The same code may have to be recompiled when upgrading from 1.15.x to 1.16.0, because minor version upgrades for `Public` APIs only provide `source` compatibility, not `binary` compatibility.
+* Code change may be required when upgrading from 1.x to 2.x because major version upgrades for `Public` APIs provide neither `source` nor `binary` compatibility.
+
+Consider the code written against a `PublicEvolving` API in 1.15.2:
+* The code can continue to run when upgrading to Flink 1.15.3 without recompiling, because patch version upgrades for `PublicEvolving` APIs guarantee `binary` compatibility.
+* A code change may be required when upgrading from 1.15.x to Flink 1.16.0, because minor version upgrades for `PublicEvolving` APIs provide neither `source` nor binary compatibility.
+{{< /hint >}}
+
+### Deprecated API Migration Period
+When an API is deprecated, it is marked with the `@Deprecated` annotation and a deprecation message is added to the Javadoc.
+According to [FLIP-321](https://cwiki.apache.org/confluence/display/FLINK/FLIP-321%3A+Introduce+an+API+deprecation+process), 
+starting from release 1.18, each deprecated API will have a guaranteed migration period depending on the API stability level:
+
+|    Annotation    |          Guaranteed Migration Period           |Could be removed after the migration period|
+|:----------------:|:----------------------------------------------:|:-----------------------------------------:|
+|     `Public`     |                2 minor releases                |            Next major version             |
+| `PublicEvolving` |                1 minor release                 |            Next minor version             |
+|  `Experimental`  | 1 patch release for the affected minor release |            Next patch version             |
+
+The source code of a deprecated API will be kept for at least the guaranteed migration period, 
+and may be removed at any point after the migration period has passed.
+
+{{< hint info >}}
+{{< label Example >}}
+Assuming a release sequence of 1.18, 1.19, 1.20, 2.0, 2.1, ..., 3.0,
+- if a `Public` API is deprecated in 1.18, it will not be removed until 2.0.
+- if a `Public` API is deprecated in 1.20, the source code will be kept in 2.0 because the migration period is 2 minor releases. Also, because a `Public` API must maintain source compatibility throughout a major version, the source code will be kept for all the 2.x versions and removed in 3.0 at the earliest.
+- if a `PublicEvolving` API is deprecated in 1.18, it will be removed in 1.20 at the earliest. 
+- if a `PublicEvolving` API is deprecated in 1.20, the source code will be kept in 2.0 because the migration period is 1 minor releases. The source code may be removed in 2.1 at the earliest.
+- if an `Experimental` API is deprecated in 1.18.0, the source code will be kept for 1.18.1 and removed in 1.18.2 at the earliest. Also, the source code can be removed in 1.19.0.  
+{{< /hint >}}
+
+Please check the [FLIP-321](https://cwiki.apache.org/confluence/display/FLINK/FLIP-321%3A+Introduce+an+API+deprecation+process) wiki for more details.
+
 ## Restarting Streaming Applications
 
 The line of action for upgrading a streaming application or migrating an application to a different cluster is based on Flink's [Savepoint]({{< ref "docs/ops/state/savepoints" >}}) feature. A savepoint is a consistent snapshot of the state of an application at a specific point in time. 
@@ -41,6 +103,7 @@ There are two ways of taking a savepoint from a running streaming application.
 > ./bin/flink savepoint <jobID> [pathToSavepoint]
 ```
 It is recommended to periodically take savepoints in order to be able to restart an application from a previous point in time.
+If you want to trigger a savepoint in detached mode, just add the option `-detached`.
 
 * Taking a savepoint and stopping the application as a single action. 
 ```bash
@@ -63,7 +126,9 @@ When upgrading an application in order to fix a bug or to improve the applicatio
 
 In this section, we discuss how applications can be modified to remain state compatible.
 
-### Matching Operator State
+### DataStream API
+
+#### Matching Operator State
 
 When an application is restarted from a savepoint, Flink matches the operator state stored in the savepoint to stateful operators of the started application. The matching is done based on operator IDs, which are also stored in the savepoint. Each operator has a default ID that is derived from the operator's position in the application's operator topology. Hence, an unmodified application can always be restarted from one of its own savepoints. However, the default IDs of operators are likely to change if an application is modified. Therefore, modified applications can only be started from a savepoint if the operator IDs have been explicitly specified. Assigning IDs to operators is very simple and done using the `uid(String)` method as follows:
 
@@ -78,7 +143,7 @@ val mappedEvents: DataStream[(Int, Long)] = events
 
 By default all state stored in a savepoint must be matched to the operators of a starting application. However, users can explicitly agree to skip (and thereby discard) state that cannot be matched to an operator when starting a application from a savepoint. Stateful operators for which no state is found in the savepoint are initialized with their default state. Users may enforce best practices by calling `ExecutionConfig#disableAutoGeneratedUIDs` which will fail the job submission if any operator does not contain a custom unique ID.
 
-### Stateful Operators and User Functions
+#### Stateful Operators and User Functions
 
 When upgrading an application, user functions and operators can be freely modified with one restriction. It is not possible to change the data type of the state of an operator. This is important because, state from a savepoint can (currently) not be converted into a different data type before it is loaded into an operator. Hence, changing the data type of operator state when upgrading an application breaks application state consistency and prevents the upgraded application from being restarted from the savepoint. 
 
@@ -97,7 +162,7 @@ Operator state can be either user-defined or internal.
 | CoGroupFunction[IT1, IT2, OT]                       | IT1, IT2 (Type of 1. and 2. input), KEY |
 | Built-in Aggregations (sum, min, max, minBy, maxBy) | Input Type [, KEY]                   |
 
-### Application Topology
+#### Application Topology
 
 Besides changing the logic of one or more existing operators, applications can be upgraded by changing the topology of the application, i.e., by adding or removing operators, changing the parallelism of an operator, or modifying the operator chaining behavior.
 
@@ -108,6 +173,19 @@ When upgrading an application by changing its topology, a few things need to be 
 * **Removing a stateful operator:** The state of the removed operator is lost unless another operator takes it over. When starting the upgraded application, you have to explicitly agree to discard the state.
 * **Changing of input and output types of operators:** When adding a new operator before or behind an operator with internal state, you have to ensure that the input or output type of the stateful operator is not modified to preserve the data type of the internal operator state (see above for details).
 * **Changing operator chaining:** Operators can be chained together for improved performance. When restoring from a savepoint taken since 1.3.x it is possible to modify chains while preserving state consistency. It is possible a break the chain such that a stateful operator is moved out of the chain. It is also possible to append or inject a new or existing stateful operator into a chain, or to modify the operator order within a chain. However, when upgrading a savepoint to 1.3.x it is paramount that the topology did not change in regards to chaining. All operators that are part of a chain should be assigned an ID as described in the [Matching Operator State](#matching-operator-state) section above.
+
+### Table API & SQL
+
+Due to the declarative nature of Table API & SQL programs, the underlying operator topology and state
+representation are mostly determined and optimized by the table planner.
+
+Be aware that any change to both the query and the Flink version could lead to state incompatibility.
+Every new major-minor Flink version (e.g. `1.12` to `1.13`) might introduce new optimizer rules or more
+specialized runtime operators that change the execution plan. However, the community tries to keep patch
+versions state-compatible (e.g. `1.13.1` to `1.13.2`).
+
+See the [table state management section]({{< ref "docs/dev/table/concepts/overview" >}}#state-management)
+for more information.
 
 ## Upgrading the Flink Framework Version
 
@@ -174,6 +252,8 @@ You can do this with the command:
 $ bin/flink stop [--savepointPath :savepointPath] :jobId
 ```
 
+If you want to trigger the savepoint in detached mode, add option `-detached` to the command.
+
 For more details, please read the [savepoint documentation]({{< ref "docs/ops/state/savepoints" >}}).
 
 #### STEP 2: Update your cluster to the new Flink version.
@@ -203,166 +283,16 @@ Savepoints are compatible across Flink versions as indicated by the table below:
   <thead>
     <tr>
       <th class="text-left" style="width: 25%">Created with \ Resumed with</th>
-      <th class="text-center">1.1.x</th>
-      <th class="text-center">1.2.x</th>
-      <th class="text-center">1.3.x</th>
-      <th class="text-center">1.4.x</th>
-      <th class="text-center">1.5.x</th>
-      <th class="text-center">1.6.x</th>
-      <th class="text-center">1.7.x</th>
-      <th class="text-center">1.8.x</th>
-      <th class="text-center">1.9.x</th>
-      <th class="text-center">1.10.x</th>
-      <th class="text-center">1.11.x</th>
-      <th class="text-center">1.12.x</th>
-      <th class="text-center">1.13.x</th>
+      <th class="text-center">1.17.x</th>
+      <th class="text-center">1.18.x</th>
+      <th class="text-center">1.19.x</th>
+      <th class="text-center">1.20.x</th>
       <th class="text-center" style="width: 50%">Limitations</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-          <td class="text-center"><strong>1.1.x</strong></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-left">The maximum parallelism of a job that was migrated from Flink 1.1.x to 1.2.x+ is
-          currently fixed as the parallelism of the job. This means that the parallelism can not be increased after
-          migration. This limitation might be removed in a future bugfix release.</td>
-    </tr>
-    <tr>
-          <td class="text-center"><strong>1.2.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-left">
-          When migrating from Flink 1.2.x to Flink 1.3.x+, changing parallelism at the same
-          time is not supported. Users have to first take a savepoint after migrating to Flink 1.3.x+, and then change
-          parallelism.
-          <br/><br/>Savepoints created for CEP applications cannot be restored in 1.4.x+.
-          <br/><br/>Savepoints from Flink 1.2 that contain a Scala TraversableSerializer are not compatible with Flink 1.8 anymore
-          because of an update in this serializer. You can get around this restriction by first upgrading to a version between Flink 1.3 and
-          Flink 1.7 and then updating to Flink 1.8.
-          </td>
-    </tr>
-    <tr>
-          <td class="text-center"><strong>1.3.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-left">Migrating from Flink 1.3.0 to Flink 1.4.[0,1] will fail if the savepoint contains Scala case classes. Users have to directly migrate to 1.4.2+ instead.</td>
-    </tr>
-    <tr>
-          <td class="text-center"><strong>1.4.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-left"></td>
-    </tr>
-    <tr>
-          <td class="text-center"><strong>1.5.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-left">There is a known issue with resuming broadcast state created with 1.5.x in versions
-          1.6.x up to 1.6.2, and 1.7.0: <a href="https://issues.apache.org/jira/browse/FLINK-11087">FLINK-11087</a>. Users
-          upgrading to 1.6.x or 1.7.x series need to directly migrate to minor versions higher than 1.6.2 and 1.7.0,
-          respectively.</td>
-    </tr>
-    <tr>
-          <td class="text-center"><strong>1.6.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-left"></td>
-    </tr>
-    <tr>
-          <td class="text-center"><strong>1.7.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
-          <td class="text-left"></td>
-    </tr>
-    <tr>
           <td class="text-center"><strong>1.8.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
-          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -371,15 +301,6 @@ Savepoints are compatible across Flink versions as indicated by the table below:
     </tr>
     <tr>
           <td class="text-center"><strong>1.9.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -388,15 +309,6 @@ Savepoints are compatible across Flink versions as indicated by the table below:
     </tr>
     <tr>
           <td class="text-center"><strong>1.10.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -405,16 +317,7 @@ Savepoints are compatible across Flink versions as indicated by the table below:
     </tr>
     <tr>
           <td class="text-center"><strong>1.11.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
+          <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
           <td class="text-center">O</td>
@@ -422,15 +325,70 @@ Savepoints are compatible across Flink versions as indicated by the table below:
     </tr>
     <tr>
           <td class="text-center"><strong>1.12.x</strong></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left"></td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.13.x</strong></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left">Don't upgrade from 1.12.x to 1.13.x with an unaligned checkpoint. Please use a savepoint for migrating.</td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.14.x</strong></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left"></td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.15.x</strong></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left">
+            For Table API: 1.15.0 and 1.15.1 generated non-deterministic UIDs for operators that 
+            make it difficult/impossible to restore state or upgrade to next patch version. A new 
+            table.exec.uid.generation config option (with correct default behavior) disables setting
+            a UID for new pipelines from non-compiled plans. Existing pipelines can set 
+            table.exec.uid.generation=ALWAYS if the 1.15.0/1 behavior was acceptable due to a stable
+            environment. See <a href="https://issues.apache.org/jira/browse/FLINK-28861">FLINK-28861</a>
+            for more information.
+          </td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.16.x</strong></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left"></td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.17.x</strong></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left"></td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.18.x</strong></td>
           <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-center">O</td>
+          <td class="text-left"></td>
+        </tr>
+    <tr>
+          <td class="text-center"><strong>1.19.x</strong></td>
           <td class="text-center"></td>
           <td class="text-center"></td>
           <td class="text-center">O</td>
@@ -438,23 +396,17 @@ Savepoints are compatible across Flink versions as indicated by the table below:
           <td class="text-left"></td>
         </tr>
     <tr>
-          <td class="text-center"><strong>1.13.x</strong></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
-          <td class="text-center"></td>
+          <td class="text-center"><strong>1.20.x</strong></td>
           <td class="text-center"></td>
           <td class="text-center"></td>
           <td class="text-center"></td>
           <td class="text-center">O</td>
-          <td class="text-left">Don't upgrade from 1.12.x to 1.13.x with an unaligned checkpoint. Please use a savepoint for migrating.</td>
+          <td class="text-left"></td>
         </tr>
   </tbody>
 </table>
+
+Please refer to the last [Compatibility Table](https://nightlies.apache.org/flink/flink-docs-release-1.18/docs/ops/upgrading/#compatibility-table)
+ for the savepoint compatibility information of older Flink versions.
 
 {{< top >}}

@@ -22,6 +22,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.UnresolvedReferenceExpression;
+import org.apache.flink.table.functions.DeclarativeAggregateFunction;
 import org.apache.flink.table.types.DataType;
 
 import static org.apache.flink.table.expressions.ApiExpressionUtils.unresolvedRef;
@@ -30,7 +31,8 @@ import static org.apache.flink.table.planner.expressions.ExpressionBuilder.plus;
 
 /** built-in row_number aggregate function. */
 public class RowNumberAggFunction extends DeclarativeAggregateFunction {
-    private UnresolvedReferenceExpression sequence = unresolvedRef("seq");
+
+    private final UnresolvedReferenceExpression sequence = unresolvedRef("seq");
 
     @Override
     public int operandCount() {

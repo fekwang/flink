@@ -24,7 +24,7 @@ from typing import Dict, Union
 
 from pyflink.java_gateway import get_gateway
 from pyflink.table.table_schema import TableSchema
-from pyflink.table.types import _to_java_type, DataType
+from pyflink.table.types import DataType, _to_java_data_type
 
 __all__ = [
     'Rowtime',
@@ -180,7 +180,7 @@ class Schema(Descriptor):
                         event-time attribute.
         """
         gateway = get_gateway()
-        self._j_schema = gateway.jvm.org.apache.flink.table.descriptors.Schema()
+        self._j_schema = gateway.jvm.org.apache.flink.table.legacy.descriptors.Schema()
         super(Schema, self).__init__(self._j_schema)
 
         if schema is not None:
@@ -210,7 +210,7 @@ class Schema(Descriptor):
         Adds a field with the field name and the data type or type string. Required.
         This method can be called multiple times. The call order of this method defines
         also the order of the fields in a row. Here is a document that introduces the type strings:
-        https://ci.apache.org/projects/flink/flink-docs-stable/dev/table/connect.html#type-strings
+        https://nightlies.apache.org/flink/flink-docs-stable/dev/table/connect.html#type-strings
 
         :param field_name: The field name.
         :param field_type: The data type or type string of the field.
@@ -219,7 +219,7 @@ class Schema(Descriptor):
         if isinstance(field_type, str):
             self._j_schema = self._j_schema.field(field_name, field_type)
         else:
-            self._j_schema = self._j_schema.field(field_name, _to_java_type(field_type))
+            self._j_schema = self._j_schema.field(field_name, _to_java_data_type(field_type))
         return self
 
     def fields(self, fields: Dict[str, Union[DataType, str]]) -> 'Schema':

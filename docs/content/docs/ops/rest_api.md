@@ -2,7 +2,6 @@
 title: "REST API"
 weight: 7
 type: docs
-bookToc: false
 aliases:
   - /ops/rest_api.html
   - /internals/monitoring_rest_api.html
@@ -36,7 +35,7 @@ The monitoring API is a REST-ful API that accepts HTTP requests and responds wit
 
 ## Overview
 
-The monitoring API is backed by a web server that runs as part of the *JobManager*. By default, this server listens at port `8081`, which can be configured in `flink-conf.yaml` via `rest.port`. Note that the monitoring API web server and the web dashboard web server are currently the same and thus run together at the same port. They respond to different HTTP URLs, though.
+The monitoring API is backed by a web server that runs as part of the *JobManager*. By default, this server listens at port `8081`, which can be configured in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}) via `rest.port`. Note that the monitoring API web server and the web dashboard web server are currently the same and thus run together at the same port. They respond to different HTTP URLs, though.
 
 In the case of multiple JobManagers (for high availability), each JobManager will run its own instance of the monitoring API, which offers information about completed and running job while that JobManager was elected the cluster leader.
 
@@ -66,9 +65,25 @@ Querying unsupported/non-existing versions will return a 404 error.
 
 There exist several async operations among these APIs, e.g. `trigger savepoint`, `rescale a job`. They would return a `triggerid` to identify the operation you just POST and then you need to use that `triggerid` to query for the status of the operation.
 
+For (stop-with-)savepoint operations you can control this `triggerId` by setting it in the body of the request that triggers the operation.
+This allow you to safely* retry such operations without triggering multiple savepoints.
+
+{{< hint info >}}
+The retry is only safe until the [async operation store duration]({{< ref "docs/deployment/config#rest-async-store-duration" >}}) has elapsed.
+{{</ hint >}}
+
+### JobManager
+
+[OpenAPI specification]({{< ref_static "generated/rest_v1_dispatcher.yml" >}})
+
+{{< hint warning >}}
+The OpenAPI specification is still experimental.
+{{< /hint >}}
+
+#### API reference
+
 {{< tabs "f00ed142-b05f-44f0-bafc-799080c1d40d" >}}
 {{< tab "v1" >}}
-#### JobManager
 
 {{< generated/rest_v1_dispatcher >}}
 

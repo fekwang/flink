@@ -19,19 +19,22 @@ package org.apache.flink.contrib.streaming.state;
 
 import org.apache.flink.configuration.ConfigConstants;
 import org.apache.flink.contrib.streaming.state.ttl.RocksDbTtlCompactFiltersManager;
-import org.apache.flink.runtime.memory.MemoryManager;
+import org.apache.flink.core.fs.ICloseableRegistry;
+import org.apache.flink.runtime.execution.CancelTaskException;
+import org.apache.flink.runtime.execution.Environment;
 import org.apache.flink.runtime.memory.OpaqueMemoryResource;
 import org.apache.flink.runtime.state.RegisteredStateMetaInfoBase;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.OperatingSystem;
 import org.apache.flink.util.Preconditions;
-import org.apache.flink.util.function.LongFunctionWithException;
 
 import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.DBOptions;
+import org.rocksdb.ExportImportFilesMetaData;
+import org.rocksdb.ImportColumnFamilyOptions;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -40,9 +43,11 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
@@ -52,10 +57,6 @@ import static org.apache.flink.contrib.streaming.state.RocksDBKeyedStateBackend.
 /** Utils for RocksDB Operations. */
 public class RocksDBOperationUtils {
     private static final Logger LOG = LoggerFactory.getLogger(RocksDBOperationUtils.class);
-
-    private static final String MANAGED_MEMORY_RESOURCE_ID = "state-rocks-managed-memory";
-
-    private static final String FIXED_SLOT_MEMORY_RESOURCE_ID = "state-rocks-fixed-slot-memory";
 
     public static RocksDB openDB(
             String path,
@@ -76,13 +77,21 @@ public class RocksDBOperationUtils {
         RocksDB dbRef;
 
         try {
+            // Ensure that the working directory exists and is a directory to make RocksDB happy
+            File pathFile = new File(Preconditions.checkNotNull(path));
+
+            if (!pathFile.exists() && !pathFile.mkdirs() && !pathFile.isDirectory()) {
+                throw new IOException(
+                        "Could not create working directory for RocksDB instance: " + path);
+            }
+
             dbRef =
                     RocksDB.open(
                             Preconditions.checkNotNull(dbOptions),
-                            Preconditions.checkNotNull(path),
+                            path,
                             columnFamilyDescriptors,
                             stateColumnFamilyHandles);
-        } catch (RocksDBException e) {
+        } catch (Exception e) {
             IOUtils.closeQuietly(columnFamilyOptions);
             columnFamilyDescriptors.forEach((cfd) -> IOUtils.closeQuietly(cfd.getOptions()));
 
@@ -122,13 +131,18 @@ public class RocksDBOperationUtils {
      *
      * <p>Creates the column family for the state. Sets TTL compaction filter if {@code
      * ttlCompactFiltersManager} is not {@code null}.
+     *
+     * @param importFilesMetaData if not empty, we import the files specified in the metadata to the
+     *     column family.
      */
     public static RocksDBKeyedStateBackend.RocksDbKvStateInfo createStateInfo(
             RegisteredStateMetaInfoBase metaInfoBase,
             RocksDB db,
             Function<String, ColumnFamilyOptions> columnFamilyOptionsFactory,
             @Nullable RocksDbTtlCompactFiltersManager ttlCompactFiltersManager,
-            @Nullable Long writeBufferManagerCapacity) {
+            @Nullable Long writeBufferManagerCapacity,
+            List<ExportImportFilesMetaData> importFilesMetaData,
+            ICloseableRegistry cancelStreamRegistryForRestore) {
 
         ColumnFamilyDescriptor columnFamilyDescriptor =
                 createColumnFamilyDescriptor(
@@ -136,8 +150,43 @@ public class RocksDBOperationUtils {
                         columnFamilyOptionsFactory,
                         ttlCompactFiltersManager,
                         writeBufferManagerCapacity);
-        return new RocksDBKeyedStateBackend.RocksDbKvStateInfo(
-                createColumnFamily(columnFamilyDescriptor, db), metaInfoBase);
+
+        try {
+            ColumnFamilyHandle columnFamilyHandle =
+                    createColumnFamily(
+                            columnFamilyDescriptor,
+                            db,
+                            importFilesMetaData,
+                            cancelStreamRegistryForRestore);
+            return new RocksDBKeyedStateBackend.RocksDbKvStateInfo(
+                    columnFamilyHandle, metaInfoBase);
+        } catch (Exception ex) {
+            IOUtils.closeQuietly(columnFamilyDescriptor.getOptions());
+            throw new FlinkRuntimeException("Error creating ColumnFamilyHandle.", ex);
+        }
+    }
+
+    /**
+     * Create RocksDB-backed KV-state, including RocksDB ColumnFamily.
+     *
+     * @param cancelStreamRegistryForRestore {@link ICloseableRegistry#close closing} it interrupts
+     *     KV state creation
+     */
+    public static RocksDBKeyedStateBackend.RocksDbKvStateInfo createStateInfo(
+            RegisteredStateMetaInfoBase metaInfoBase,
+            RocksDB db,
+            Function<String, ColumnFamilyOptions> columnFamilyOptionsFactory,
+            @Nullable RocksDbTtlCompactFiltersManager ttlCompactFiltersManager,
+            @Nullable Long writeBufferManagerCapacity,
+            ICloseableRegistry cancelStreamRegistryForRestore) {
+        return createStateInfo(
+                metaInfoBase,
+                db,
+                columnFamilyOptionsFactory,
+                ttlCompactFiltersManager,
+                writeBufferManagerCapacity,
+                Collections.emptyList(),
+                cancelStreamRegistryForRestore);
     }
 
     /**
@@ -151,15 +200,17 @@ public class RocksDBOperationUtils {
             @Nullable RocksDbTtlCompactFiltersManager ttlCompactFiltersManager,
             @Nullable Long writeBufferManagerCapacity) {
 
-        ColumnFamilyOptions options =
-                createColumnFamilyOptions(columnFamilyOptionsFactory, metaInfoBase.getName());
-        if (ttlCompactFiltersManager != null) {
-            ttlCompactFiltersManager.setAndRegisterCompactFilterIfStateTtl(metaInfoBase, options);
-        }
         byte[] nameBytes = metaInfoBase.getName().getBytes(ConfigConstants.DEFAULT_CHARSET);
         Preconditions.checkState(
                 !Arrays.equals(RocksDB.DEFAULT_COLUMN_FAMILY, nameBytes),
                 "The chosen state name 'default' collides with the name of the default column family!");
+
+        ColumnFamilyOptions options =
+                createColumnFamilyOptions(columnFamilyOptionsFactory, metaInfoBase.getName());
+
+        if (ttlCompactFiltersManager != null) {
+            ttlCompactFiltersManager.setAndRegisterCompactFilterIfStateTtl(metaInfoBase, options);
+        }
 
         if (writeBufferManagerCapacity != null) {
             // It'd be great to perform the check earlier, e.g. when creating write buffer manager.
@@ -186,8 +237,7 @@ public class RocksDBOperationUtils {
      * @return true if sanity check passes, false otherwise
      */
     static boolean sanityCheckArenaBlockSize(
-            long writeBufferSize, long arenaBlockSizeConfigured, long writeBufferManagerCapacity)
-            throws IllegalStateException {
+            long writeBufferSize, long arenaBlockSizeConfigured, long writeBufferManagerCapacity) {
 
         long defaultArenaBlockSize =
                 RocksDBMemoryControllerUtils.calculateRocksDBDefaultArenaBlockSize(writeBufferSize);
@@ -226,12 +276,27 @@ public class RocksDBOperationUtils {
     }
 
     private static ColumnFamilyHandle createColumnFamily(
-            ColumnFamilyDescriptor columnDescriptor, RocksDB db) {
-        try {
+            ColumnFamilyDescriptor columnDescriptor,
+            RocksDB db,
+            List<ExportImportFilesMetaData> importFilesMetaData,
+            ICloseableRegistry cancelStreamRegistryForRestore)
+            throws RocksDBException, InterruptedException {
+        if (Thread.currentThread().isInterrupted()) {
+            // abort recovery if the task thread was already interrupted
+            // e.g. because the task was cancelled
+            throw new InterruptedException("The thread was interrupted, aborting recovery");
+        } else if (cancelStreamRegistryForRestore.isClosed()) {
+            throw new CancelTaskException("The stream was closed, aborting recovery");
+        }
+
+        if (importFilesMetaData.isEmpty()) {
             return db.createColumnFamily(columnDescriptor);
-        } catch (RocksDBException e) {
-            IOUtils.closeQuietly(columnDescriptor.getOptions());
-            throw new FlinkRuntimeException("Error creating ColumnFamilyHandle.", e);
+        } else {
+            try (ImportColumnFamilyOptions importColumnFamilyOptions =
+                    new ImportColumnFamilyOptions().setMoveFiles(true)) {
+                return db.createColumnFamilyWithImport(
+                        columnDescriptor, importColumnFamilyOptions, importFilesMetaData);
+            }
         }
     }
 
@@ -256,42 +321,23 @@ public class RocksDBOperationUtils {
 
     @Nullable
     public static OpaqueMemoryResource<RocksDBSharedResources> allocateSharedCachesIfConfigured(
-            RocksDBMemoryConfiguration memoryConfig,
-            MemoryManager memoryManager,
+            RocksDBMemoryConfiguration jobMemoryConfig,
+            Environment env,
             double memoryFraction,
-            Logger logger)
+            Logger logger,
+            RocksDBMemoryControllerUtils.RocksDBMemoryFactory rocksDBMemoryFactory)
             throws IOException {
 
-        if (!memoryConfig.isUsingFixedMemoryPerSlot() && !memoryConfig.isUsingManagedMemory()) {
-            return null;
-        }
-
-        final double highPriorityPoolRatio = memoryConfig.getHighPriorityPoolRatio();
-        final double writeBufferRatio = memoryConfig.getWriteBufferRatio();
-        final boolean usingPartitionedIndexFilters = memoryConfig.isUsingPartitionedIndexFilters();
-
-        final LongFunctionWithException<RocksDBSharedResources, Exception> allocator =
-                (size) ->
-                        RocksDBMemoryControllerUtils.allocateRocksDBSharedResources(
-                                size,
-                                writeBufferRatio,
-                                highPriorityPoolRatio,
-                                usingPartitionedIndexFilters);
-
         try {
-            if (memoryConfig.isUsingFixedMemoryPerSlot()) {
-                assert memoryConfig.getFixedMemoryPerSlot() != null;
-
-                logger.info("Getting fixed-size shared cache for RocksDB.");
-                return memoryManager.getExternalSharedMemoryResource(
-                        FIXED_SLOT_MEMORY_RESOURCE_ID,
-                        allocator,
-                        memoryConfig.getFixedMemoryPerSlot().getBytes());
-            } else {
-                logger.info("Getting managed memory shared cache for RocksDB.");
-                return memoryManager.getSharedMemoryResourceForManagedMemory(
-                        MANAGED_MEMORY_RESOURCE_ID, allocator, memoryFraction);
+            RocksDBSharedResourcesFactory factory =
+                    RocksDBSharedResourcesFactory.from(jobMemoryConfig, env);
+            if (factory == null) {
+                return null;
             }
+
+            return factory.create(
+                    jobMemoryConfig, env, memoryFraction, logger, rocksDBMemoryFactory);
+
         } catch (Exception e) {
             throw new IOException("Failed to acquire shared cache resource for RocksDB", e);
         }

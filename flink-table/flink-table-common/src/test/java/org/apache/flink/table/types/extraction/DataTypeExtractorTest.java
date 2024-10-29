@@ -45,13 +45,8 @@ import org.apache.flink.table.types.utils.DataTypeFactoryMock;
 import org.apache.flink.types.Row;
 
 import org.hamcrest.Matcher;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameter;
-import org.junit.runners.Parameterized.Parameters;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
 
@@ -64,22 +59,23 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
+import java.util.stream.Stream;
 
+import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
 import static org.apache.flink.core.testutils.FlinkMatchers.containsCause;
+import static org.apache.flink.table.test.TableAssertions.assertThat;
 import static org.apache.flink.table.types.utils.DataTypeFactoryMock.dummyRaw;
-import static org.hamcrest.CoreMatchers.equalTo;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link DataTypeExtractor}. */
-@RunWith(Parameterized.class)
 @SuppressWarnings("unused")
-public class DataTypeExtractorTest {
+class DataTypeExtractorTest {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    @Parameters(name = "{index}: {0}")
-    public static List<TestSpec> testData() {
-        return Arrays.asList(
+    private static Stream<TestSpec> testData() {
+        return Stream.of(
                 // simple extraction of INT
                 TestSpec.forType(Integer.class).expectDataType(DataTypes.INT()),
 
@@ -383,6 +379,12 @@ public class DataTypeExtractorTest {
 
                 // method with generic return type
                 TestSpec.forMethodOutput(IntegerVarArg.class).expectDataType(DataTypes.INT()),
+                // method with parameter with a generic itself
+                TestSpec.forGenericMethodParameter(CompletableFutureVarArg.class, 0, 0)
+                        .expectDataType(DataTypes.BIGINT()),
+                // method with the future return type as a generic
+                TestSpec.forGenericMethodParameter(CompletableFutureGeneric.class, 0, 0)
+                        .expectDataType(DataTypes.BIGINT()),
                 TestSpec.forType(
                                 "Structured type with invalid constructor",
                                 SimplePojoWithInvalidConstructor.class)
@@ -475,17 +477,18 @@ public class DataTypeExtractorTest {
                                         DataTypes.FIELD("string_field", DataTypes.STRING()))));
     }
 
-    @Parameter public TestSpec testSpec;
-
-    @Rule public ExpectedException thrown = ExpectedException.none();
-
-    @Test
-    public void testExtraction() {
+    @ParameterizedTest(name = "{index}: {0}")
+    @MethodSource("testData")
+    void testExtraction(TestSpec testSpec) {
         if (testSpec.expectedErrorMessage != null) {
-            thrown.expect(ValidationException.class);
-            thrown.expectCause(errorMatcher(testSpec));
+            assertThatThrownBy(() -> runExtraction(testSpec))
+                    .isInstanceOf(ValidationException.class)
+                    .satisfies(
+                            anyCauseMatches(
+                                    ValidationException.class, testSpec.expectedErrorMessage));
+        } else {
+            runExtraction(testSpec);
         }
-        runExtraction(testSpec);
     }
 
     // --------------------------------------------------------------------------------------------
@@ -558,6 +561,20 @@ public class DataTypeExtractorTest {
             return forMethodParameter(null, clazz, paramPos);
         }
 
+        static TestSpec forGenericMethodParameter(
+                String description, Class<?> clazz, int paramPos, int genericPos) {
+            final Method method = clazz.getMethods()[0];
+            return new TestSpec(
+                    description,
+                    (lookup) ->
+                            DataTypeExtractor.extractFromGenericMethodParameter(
+                                    lookup, clazz, method, paramPos, genericPos));
+        }
+
+        static TestSpec forGenericMethodParameter(Class<?> clazz, int paramPos, int genericPos) {
+            return forGenericMethodParameter(null, clazz, paramPos, genericPos);
+        }
+
         static TestSpec forMethodOutput(String description, Class<?> clazz) {
             final Method method = clazz.getMethods()[0];
             return new TestSpec(
@@ -604,7 +621,7 @@ public class DataTypeExtractorTest {
     static void runExtraction(TestSpec testSpec) {
         final DataType dataType = testSpec.extractor.apply(testSpec.typeFactory);
         if (testSpec.expectedDataType != null) {
-            assertThat(dataType, equalTo(testSpec.expectedDataType));
+            assertThat(dataType).isEqualTo(testSpec.expectedDataType);
         }
     }
 
@@ -620,8 +637,7 @@ public class DataTypeExtractorTest {
                         new StructuredAttribute("intField", new IntType(true)),
                         new StructuredAttribute("primitiveBooleanField", new BooleanType(false)),
                         new StructuredAttribute("primitiveIntField", new IntType(false)),
-                        new StructuredAttribute(
-                                "stringField", new VarCharType(VarCharType.MAX_LENGTH))));
+                        new StructuredAttribute("stringField", VarCharType.STRING_TYPE)));
         builder.setFinal(true);
         builder.setInstantiable(true);
         final StructuredType structuredType = builder.build();
@@ -642,9 +658,7 @@ public class DataTypeExtractorTest {
         builder.attributes(
                 Arrays.asList(
                         new StructuredAttribute(
-                                "mapField",
-                                new MapType(
-                                        new VarCharType(VarCharType.MAX_LENGTH), new IntType())),
+                                "mapField", new MapType(VarCharType.STRING_TYPE, new IntType())),
                         new StructuredAttribute(
                                 "simplePojoField",
                                 getSimplePojoDataType(simplePojoClass).getLogicalType()),
@@ -701,7 +715,7 @@ public class DataTypeExtractorTest {
         final StructuredType.Builder builder = StructuredType.newBuilder(Tuple2.class);
         builder.attributes(
                 Arrays.asList(
-                        new StructuredAttribute("f0", new VarCharType(VarCharType.MAX_LENGTH)),
+                        new StructuredAttribute("f0", VarCharType.STRING_TYPE),
                         new StructuredAttribute("f1", new BooleanType())));
         builder.setFinal(true);
         builder.setInstantiable(true);
@@ -973,6 +987,16 @@ public class DataTypeExtractorTest {
     public static class IntegerVarArg extends VarArgMethod<Integer> {
         // nothing to do
     }
+
+    public static class CompletableFutureVarArg extends VarArgMethod<CompletableFuture<Long>> {
+        // nothing to do
+    }
+
+    public static class CompletableFutureBase<T> {
+        public void eval(CompletableFuture<T> i, int arg) {}
+    }
+
+    public static class CompletableFutureGeneric extends CompletableFutureBase<Long> {}
 
     // --------------------------------------------------------------------------------------------
 

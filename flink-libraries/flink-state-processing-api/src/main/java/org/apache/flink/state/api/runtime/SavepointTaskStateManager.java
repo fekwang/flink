@@ -18,21 +18,28 @@
 
 package org.apache.flink.state.api.runtime;
 
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.checkpoint.CheckpointMetaData;
 import org.apache.flink.runtime.checkpoint.CheckpointMetrics;
 import org.apache.flink.runtime.checkpoint.InflightDataRescalingDescriptor;
+import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.runtime.checkpoint.PrioritizedOperatorSubtaskState;
+import org.apache.flink.runtime.checkpoint.SubTaskInitializationMetrics;
 import org.apache.flink.runtime.checkpoint.TaskStateSnapshot;
 import org.apache.flink.runtime.checkpoint.channel.SequentialChannelStateReader;
+import org.apache.flink.runtime.checkpoint.filemerging.FileMergingSnapshotManager;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.LocalRecoveryConfig;
-import org.apache.flink.runtime.state.LocalRecoveryDirectoryProvider;
 import org.apache.flink.runtime.state.TaskStateManager;
+import org.apache.flink.runtime.state.changelog.ChangelogStateHandle;
 import org.apache.flink.runtime.state.changelog.StateChangelogStorage;
+import org.apache.flink.runtime.state.changelog.StateChangelogStorageView;
 import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+
+import java.util.Optional;
 
 /**
  * A minimally implemented {@link TaskStateManager} that provides the functionality required to run
@@ -50,6 +57,10 @@ final class SavepointTaskStateManager implements TaskStateManager {
     }
 
     @Override
+    public void reportInitializationMetrics(
+            SubTaskInitializationMetrics subTaskInitializationMetrics) {}
+
+    @Override
     public void reportTaskStateSnapshots(
             @Nonnull CheckpointMetaData checkpointMetaData,
             @Nonnull CheckpointMetrics checkpointMetrics,
@@ -61,8 +72,13 @@ final class SavepointTaskStateManager implements TaskStateManager {
             CheckpointMetaData checkpointMetaData, CheckpointMetrics checkpointMetrics) {}
 
     @Override
-    public boolean isFinishedOnRestore() {
+    public boolean isTaskDeployedAsFinished() {
         return false;
+    }
+
+    @Override
+    public Optional<Long> getRestoreCheckpointId() {
+        return Optional.empty();
     }
 
     @Nonnull
@@ -71,11 +87,16 @@ final class SavepointTaskStateManager implements TaskStateManager {
         return prioritizedOperatorSubtaskState;
     }
 
+    @Override
+    public Optional<OperatorSubtaskState> getSubtaskJobManagerRestoredState(OperatorID operatorID) {
+        throw new UnsupportedOperationException(
+                "Unsupported method for SavepointTaskStateManager.");
+    }
+
     @Nonnull
     @Override
     public LocalRecoveryConfig createLocalRecoveryConfig() {
-        LocalRecoveryDirectoryProvider provider = new SavepointLocalRecoveryProvider();
-        return new LocalRecoveryConfig(false, provider);
+        return LocalRecoveryConfig.BACKUP_AND_RECOVERY_DISABLED;
     }
 
     @Override
@@ -96,7 +117,20 @@ final class SavepointTaskStateManager implements TaskStateManager {
     @Nullable
     @Override
     public StateChangelogStorage<?> getStateChangelogStorage() {
-        throw new UnsupportedOperationException(MSG);
+        return null;
+    }
+
+    @Nullable
+    @Override
+    public StateChangelogStorageView<?> getStateChangelogStorageView(
+            Configuration configuration, ChangelogStateHandle changelogStateHandle) {
+        return null;
+    }
+
+    @Nullable
+    @Override
+    public FileMergingSnapshotManager getFileMergingSnapshotManager() {
+        return null;
     }
 
     @Override

@@ -15,24 +15,22 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.physical.stream
 
-import org.apache.flink.table.expressions.ApiExpressionUtils.intervalOfMillis
-import org.apache.flink.table.expressions.FieldReferenceExpression
+import org.apache.flink.table.api.TableException
 import org.apache.flink.table.planner.calcite.FlinkTypeFactory
-import org.apache.flink.table.planner.expressions.{PlannerNamedWindowProperty, PlannerWindowReference}
-import org.apache.flink.table.planner.plan.logical.{SessionGroupWindow, SessionWindowSpec, TimeAttributeWindowingStrategy, WindowingStrategy}
-import org.apache.flink.table.planner.plan.nodes.exec.stream.{StreamExecGroupWindowAggregate, StreamExecWindowAggregate}
+import org.apache.flink.table.planner.plan.logical.{WindowAttachedWindowingStrategy, WindowingStrategy}
 import org.apache.flink.table.planner.plan.nodes.exec.{ExecNode, InputProperty}
-import org.apache.flink.table.planner.plan.utils.{AggregateInfoList, AggregateUtil, FlinkRelOptUtil, RelExplainUtil, WindowUtil}
+import org.apache.flink.table.planner.plan.nodes.exec.stream.StreamExecWindowAggregate
+import org.apache.flink.table.planner.plan.utils._
 import org.apache.flink.table.planner.plan.utils.WindowUtil.checkEmitConfiguration
-import org.apache.flink.table.runtime.types.LogicalTypeDataTypeConverter.fromLogicalTypeToDataType
+import org.apache.flink.table.planner.utils.ShortcutUtils.{unwrapTableConfig, unwrapTypeFactory}
+import org.apache.flink.table.runtime.groupwindow.NamedWindowProperty
 
 import org.apache.calcite.plan.{RelOptCluster, RelTraitSet}
 import org.apache.calcite.rel.`type`.RelDataType
+import org.apache.calcite.rel.{RelNode, RelWriter}
 import org.apache.calcite.rel.core.AggregateCall
-import org.apache.calcite.rel.{RelNode, RelWriter, SingleRel}
 
 import java.util
 
@@ -43,25 +41,34 @@ import scala.collection.JavaConverters._
  *
  * Note: The differences between [[StreamPhysicalWindowAggregate]] and
  * [[StreamPhysicalGroupWindowAggregate]] is that, [[StreamPhysicalWindowAggregate]] is translated
- * from window TVF syntax, but the other is from the legacy GROUP WINDOW FUNCTION syntax.
- * In the long future, [[StreamPhysicalGroupWindowAggregate]] will be dropped.
+ * from window TVF syntax, but the other is from the legacy GROUP WINDOW FUNCTION syntax. In the
+ * long future, [[StreamPhysicalGroupWindowAggregate]] will be dropped.
  */
 class StreamPhysicalWindowAggregate(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
     inputRel: RelNode,
-    val grouping: Array[Int],
-    val aggCalls: Seq[AggregateCall],
+    grouping: Array[Int],
+    aggCalls: Seq[AggregateCall],
     val windowing: WindowingStrategy,
-    val namedWindowProperties: Seq[PlannerNamedWindowProperty])
-  extends SingleRel(cluster, traitSet, inputRel)
+    namedWindowProperties: Seq[NamedWindowProperty])
+  extends StreamPhysicalWindowAggregateBase(
+    cluster,
+    traitSet,
+    inputRel,
+    grouping,
+    aggCalls,
+    namedWindowProperties)
   with StreamPhysicalRel {
 
   lazy val aggInfoList: AggregateInfoList = AggregateUtil.deriveStreamWindowAggregateInfoList(
+    unwrapTypeFactory(inputRel),
     FlinkTypeFactory.toLogicalRowType(inputRel.getRowType),
     aggCalls,
+    AggregateUtil.needRetraction(this),
     windowing.getWindow,
-    isStateBackendDataViews = true)
+    isStateBackendDataViews = true
+  )
 
   override def requireWatermark: Boolean = windowing.isRowtime
 
@@ -78,20 +85,21 @@ class StreamPhysicalWindowAggregate(
   override def explainTerms(pw: RelWriter): RelWriter = {
     val inputRowType = getInput.getRowType
     val inputFieldNames = inputRowType.getFieldNames.asScala.toArray
-    super.explainTerms(pw)
+    super
+      .explainTerms(pw)
       .itemIf("groupBy", RelExplainUtil.fieldToString(grouping, inputRowType), grouping.nonEmpty)
       .item("window", windowing.toSummaryString(inputFieldNames))
-      .item("select", RelExplainUtil.streamWindowAggregationToString(
-        inputRowType,
-        getRowType,
-        aggInfoList,
-        grouping,
-        namedWindowProperties))
+      .item(
+        "select",
+        RelExplainUtil.streamWindowAggregationToString(
+          inputRowType,
+          getRowType,
+          aggInfoList,
+          grouping,
+          namedWindowProperties))
   }
 
-  override def copy(
-      traitSet: RelTraitSet,
-      inputs: util.List[RelNode]): RelNode = {
+  override def copy(traitSet: RelTraitSet, inputs: util.List[RelNode]): RelNode = {
     new StreamPhysicalWindowAggregate(
       cluster,
       traitSet,
@@ -104,46 +112,22 @@ class StreamPhysicalWindowAggregate(
   }
 
   override def translateToExecNode(): ExecNode[_] = {
-    checkEmitConfiguration(FlinkRelOptUtil.getTableConfigFromContext(this))
-    windowing.getWindow match {
-      case windowSpec: SessionWindowSpec =>
-        windowing match {
-          case timeWindowStrategy: TimeAttributeWindowingStrategy =>
-            val timeAttributeFieldName = getInput.getRowType.getFieldNames.get(
-              timeWindowStrategy.getTimeAttributeIndex)
-            val timeAttributeType = windowing.getTimeAttributeType
-            val logicalWindow = SessionGroupWindow(
-              new PlannerWindowReference("w$", timeAttributeType),
-              new FieldReferenceExpression(
-                timeAttributeFieldName,
-                fromLogicalTypeToDataType(timeAttributeType),
-                0,
-                timeWindowStrategy.getTimeAttributeIndex),
-              intervalOfMillis(windowSpec.getGap.toMillis)
-            )
-            new StreamExecGroupWindowAggregate(
-              grouping,
-              aggCalls.toArray,
-              logicalWindow,
-              namedWindowProperties.toArray,
-              false,
-              InputProperty.DEFAULT,
-              FlinkTypeFactory.toLogicalRowType(getRowType),
-              getRelDetailedDescription
-            )
-          case _ =>
-            throw new UnsupportedOperationException(s"$windowing is not supported yet.")
-        }
-      case _ =>
-        new StreamExecWindowAggregate(
-          grouping,
-          aggCalls.toArray,
-          windowing,
-          namedWindowProperties.toArray,
-          InputProperty.DEFAULT,
-          FlinkTypeFactory.toLogicalRowType(getRowType),
-          getRelDetailedDescription
-        )
+    checkEmitConfiguration(unwrapTableConfig(this))
+
+    if (windowing.isInstanceOf[WindowAttachedWindowingStrategy] && windowing.isProctime) {
+      throw new TableException(
+        "Non-mergeable processing time window tvf aggregation is invalid, should fallback to group " +
+          "aggregation instead. This is a bug and should not happen. Please file an issue.")
     }
+    new StreamExecWindowAggregate(
+      unwrapTableConfig(this),
+      grouping,
+      aggCalls.toArray,
+      windowing,
+      namedWindowProperties.toArray,
+      AggregateUtil.needRetraction(this),
+      InputProperty.DEFAULT,
+      FlinkTypeFactory.toLogicalRowType(getRowType),
+      getRelDetailedDescription)
   }
 }

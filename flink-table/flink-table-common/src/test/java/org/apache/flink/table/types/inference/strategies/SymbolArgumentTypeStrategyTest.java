@@ -26,28 +26,27 @@ import org.apache.flink.table.types.inference.InputTypeStrategiesTestBase;
 import org.apache.flink.table.types.inference.InputTypeStrategy;
 import org.apache.flink.table.types.logical.SymbolType;
 
-import org.junit.runners.Parameterized;
+import java.util.stream.Stream;
 
-import java.util.List;
-
-import static java.util.Arrays.asList;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.sequence;
 import static org.apache.flink.table.types.inference.InputTypeStrategies.symbol;
 
 /** Tests for {@link SymbolArgumentTypeStrategy}. */
-public class SymbolArgumentTypeStrategyTest extends InputTypeStrategiesTestBase {
+class SymbolArgumentTypeStrategyTest extends InputTypeStrategiesTestBase {
+
+    private static final DataType SYMBOL_TYPE = new AtomicDataType(new SymbolType<>());
 
     private static final InputTypeStrategy STRATEGY = sequence(symbol(TestEnum.class));
 
-    @Parameterized.Parameters(name = "{index}: {0}")
-    public static List<TestSpec> testData() {
-        return asList(
+    @Override
+    protected Stream<TestSpec> testData() {
+        return Stream.of(
                 TestSpec.forStrategy("Valid argument", STRATEGY)
-                        .calledWithArgumentTypes(makeEnumType(TestEnum.class))
+                        .calledWithArgumentTypes(SYMBOL_TYPE)
                         .calledWithLiteralAt(0, TestEnum.A)
                         .expectSignature("f(<TestEnum>)"),
                 TestSpec.forStrategy("Wrong enum", STRATEGY)
-                        .calledWithArgumentTypes(makeEnumType(InvalidEnum.class))
+                        .calledWithArgumentTypes(SYMBOL_TYPE)
                         .calledWithLiteralAt(0, InvalidEnum.A)
                         .expectErrorMessage(
                                 "Unsupported argument symbol type. "
@@ -57,10 +56,6 @@ public class SymbolArgumentTypeStrategyTest extends InputTypeStrategiesTestBase 
                         .expectErrorMessage(
                                 "Unsupported argument type. "
                                         + "Expected symbol type 'TestEnum' but actual type was 'STRING'."));
-    }
-
-    private static <T extends TableSymbol> DataType makeEnumType(Class<T> enumClass) {
-        return new AtomicDataType(new SymbolType<T>(enumClass));
     }
 
     private enum TestEnum implements TableSymbol {

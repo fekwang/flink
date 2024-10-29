@@ -18,8 +18,10 @@
 
 package org.apache.flink.runtime.dispatcher;
 
-import org.apache.flink.runtime.jobgraph.JobGraph;
+import org.apache.flink.runtime.dispatcher.cleanup.CheckpointResourcesCleanupRunnerFactory;
+import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
 
 import java.util.Collection;
 
@@ -31,18 +33,22 @@ public enum SessionDispatcherFactory implements DispatcherFactory {
     public StandaloneDispatcher createDispatcher(
             RpcService rpcService,
             DispatcherId fencingToken,
-            Collection<JobGraph> recoveredJobs,
+            Collection<ExecutionPlan> recoveredJobs,
+            Collection<JobResult> recoveredDirtyJobResults,
             DispatcherBootstrapFactory dispatcherBootstrapFactory,
-            PartialDispatcherServicesWithJobGraphStore partialDispatcherServicesWithJobGraphStore)
+            PartialDispatcherServicesWithJobPersistenceComponents
+                    partialDispatcherServicesWithJobPersistenceComponents)
             throws Exception {
         // create the default dispatcher
         return new StandaloneDispatcher(
                 rpcService,
                 fencingToken,
                 recoveredJobs,
+                recoveredDirtyJobResults,
                 dispatcherBootstrapFactory,
                 DispatcherServices.from(
-                        partialDispatcherServicesWithJobGraphStore,
-                        JobMasterServiceLeadershipRunnerFactory.INSTANCE));
+                        partialDispatcherServicesWithJobPersistenceComponents,
+                        JobMasterServiceLeadershipRunnerFactory.INSTANCE,
+                        CheckpointResourcesCleanupRunnerFactory.INSTANCE));
     }
 }

@@ -15,18 +15,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql
 
+import org.apache.flink.table.api.ValidationException
 import org.apache.flink.table.planner.utils.{StreamTableTestUtil, TableTestBase}
 
-import org.junit.{Before, Test}
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.{BeforeEach, Test}
 
 class MatchRecognizeTest extends TableTestBase {
 
   protected val util: StreamTableTestUtil = streamTestUtil()
 
-  @Before
+  @BeforeEach
   def before(): Unit = {
     val ddl =
       """
@@ -44,7 +45,185 @@ class MatchRecognizeTest extends TableTestBase {
   }
 
   @Test
+  def testMatchRecognizeOnRowtime(): Unit = {
+    val ddl =
+      """
+        |CREATE TABLE Ticker1 (
+        | `symbol` STRING,
+        | `ts` TIMESTAMP(3),
+        | `price` INT,
+        | `tax` INT,
+        | WATERMARK FOR `ts` AS `ts` - INTERVAL '1' SECOND
+        |) WITH (
+        | 'connector' = 'values'
+        |)
+        |""".stripMargin
+    util.tableEnv.executeSql(ddl)
+
+    val sqlQuery =
+      s"""
+         |SELECT
+         |  symbol,
+         |  SUM(price) as price,
+         |  TUMBLE_ROWTIME(matchRowtime, interval '3' second) as rowTime,
+         |  TUMBLE_START(matchRowtime, interval '3' second) as startTime
+         |FROM Ticker1
+         |MATCH_RECOGNIZE (
+         |  PARTITION BY symbol
+         |  ORDER BY ts
+         |  MEASURES
+         |    A.price as price,
+         |    A.tax as tax,
+         |    MATCH_ROWTIME() as matchRowtime
+         |  ONE ROW PER MATCH
+         |  PATTERN (A)
+         |  DEFINE
+         |    A AS A.price > 0
+         |) AS T
+         |GROUP BY symbol, TUMBLE(matchRowtime, interval '3' second)
+         |""".stripMargin
+    util.verifyRelPlan(sqlQuery)
+  }
+
+  @Test
   def testMatchRecognizeOnRowtimeLTZ(): Unit = {
+    val sqlQuery =
+      s"""
+         |SELECT
+         |  symbol,
+         |  SUM(price) as price,
+         |  TUMBLE_ROWTIME(matchRowtime, interval '3' second) as rowTime,
+         |  TUMBLE_START(matchRowtime, interval '3' second) as startTime
+         |FROM Ticker
+         |MATCH_RECOGNIZE (
+         |  PARTITION BY symbol
+         |  ORDER BY ts_ltz
+         |  MEASURES
+         |    A.price as price,
+         |    A.tax as tax,
+         |    MATCH_ROWTIME(ts_ltz) as matchRowtime
+         |  ONE ROW PER MATCH
+         |  PATTERN (A)
+         |  DEFINE
+         |    A AS A.price > 0
+         |) AS T
+         |GROUP BY symbol, TUMBLE(matchRowtime, interval '3' second)
+         |""".stripMargin
+    util.verifyRelPlan(sqlQuery)
+  }
+
+  @Test
+  def testWindowTVFOnMatchRecognizeOnRowtimeLTZ(): Unit = {
+    val sqlQuery =
+      s"""
+         |SELECT
+         |  *
+         |FROM Ticker
+         |MATCH_RECOGNIZE (
+         |  PARTITION BY symbol
+         |  ORDER BY ts_ltz
+         |  MEASURES
+         |    A.price as price,
+         |    A.tax as tax,
+         |    MATCH_ROWTIME(ts_ltz) as matchRowtime
+         |  ONE ROW PER MATCH
+         |  PATTERN (A)
+         |  DEFINE
+         |    A AS A.price > 0
+         |) AS T
+         |""".stripMargin
+    val table = util.tableEnv.sqlQuery(sqlQuery)
+    util.tableEnv.createTemporaryView("T", table)
+    val sqlQuery1 =
+      s"""
+         |SELECT *
+         |FROM TABLE(TUMBLE(TABLE T, DESCRIPTOR(matchRowtime), INTERVAL '3' second))
+         |""".stripMargin
+    util.verifyRelPlanWithType(sqlQuery1)
+  }
+
+  @Test
+  def testOverWindowOnMatchRecognizeOnRowtimeLTZ(): Unit = {
+    val sqlQuery =
+      s"""
+         |SELECT
+         |  *
+         |FROM Ticker
+         |MATCH_RECOGNIZE (
+         |  PARTITION BY symbol
+         |  ORDER BY ts_ltz
+         |  MEASURES
+         |    A.price as price,
+         |    A.tax as tax,
+         |    MATCH_ROWTIME(ts_ltz) as matchRowtime
+         |  ONE ROW PER MATCH
+         |  PATTERN (A)
+         |  DEFINE
+         |    A AS A.price > 0
+         |) AS T
+         |""".stripMargin
+    val table = util.tableEnv.sqlQuery(sqlQuery)
+    util.tableEnv.createTemporaryView("T", table)
+    val sqlQuery1 =
+      """
+        |SELECT
+        |  symbol,
+        |  price,
+        |  tax,
+        |  matchRowtime,
+        |  SUM(price) OVER (
+        |    PARTITION BY symbol ORDER BY matchRowtime RANGE UNBOUNDED PRECEDING) as price_sum
+        |FROM T
+    """.stripMargin
+    util.verifyRelPlanWithType(sqlQuery1)
+  }
+
+  @Test
+  def testCascadeMatch(): Unit = {
+    val sqlQuery =
+      s"""
+         |SELECT *
+         |FROM (
+         |  SELECT
+         |    symbol,
+         |    matchRowtime,
+         |    price,
+         |    TUMBLE_START(matchRowtime, interval '3' second) as startTime
+         |  FROM Ticker
+         |  MATCH_RECOGNIZE (
+         |  PARTITION BY symbol
+         |  ORDER BY ts_ltz
+         |  MEASURES
+         |    A.price as price,
+         |    A.tax as tax,
+         |    MATCH_ROWTIME(ts_ltz) as matchRowtime
+         |  ONE ROW PER MATCH
+         |  PATTERN (A)
+         |  DEFINE
+         |    A AS A.price > 0
+         |) AS T
+         |GROUP BY symbol, matchRowtime, price, TUMBLE(matchRowtime, interval '3' second)
+         |)
+         |MATCH_RECOGNIZE (
+         |  PARTITION BY symbol
+         |  ORDER BY matchRowtime
+         |  MEASURES
+         |    A.price as dPrice,
+         |    A.matchRowtime as matchRowtime
+         |  PATTERN (A)
+         |  DEFINE
+         |    A AS A.matchRowtime >= (CURRENT_TIMESTAMP - INTERVAL '1' day)
+         |)
+         |""".stripMargin
+    util.verifyRelPlan(sqlQuery)
+  }
+
+  // ----------------------------------------------------------------------------------------
+  // Tests for Illegal use of Match_RowTime
+  // ----------------------------------------------------------------------------------------
+
+  @Test
+  def testMatchRowtimeWithoutArgumentOnRowtimeLTZ(): Unit = {
     val sqlQuery =
       s"""
          |SELECT
@@ -67,46 +246,106 @@ class MatchRecognizeTest extends TableTestBase {
          |) AS T
          |GROUP BY symbol, TUMBLE(matchRowtime, interval '3' second)
          |""".stripMargin
-    util.verifyRelPlan(sqlQuery)
+
+    assertThatThrownBy(() => util.verifyRelPlan(sqlQuery))
+      .hasMessageContaining(
+        "MATCH_ROWTIME(rowtimeField) should be used when input stream " +
+          "contains rowtime attribute with TIMESTAMP_LTZ type.\n" +
+          "Please pass rowtime attribute field as input argument of " +
+          "MATCH_ROWTIME(rowtimeField) function.")
+      .isInstanceOf[AssertionError]
   }
 
   @Test
-  def testCascadeMatch(): Unit = {
+  def testMatchRowtimeWithMultipleArgs(): Unit = {
     val sqlQuery =
       s"""
-         |SELECT *
-         |FROM (
-         |  SELECT
-         |    symbol,
-         |    matchRowtime,
-         |    price,
-         |    TUMBLE_START(matchRowtime, interval '3' second) as startTime
-         |  FROM Ticker
-         |  MATCH_RECOGNIZE (
+         |SELECT
+         |  symbol,
+         |  SUM(price) as price,
+         |  TUMBLE_ROWTIME(matchRowtime, interval '3' second) as rowTime,
+         |  TUMBLE_START(matchRowtime, interval '3' second) as startTime
+         |FROM Ticker
+         |MATCH_RECOGNIZE (
          |  PARTITION BY symbol
          |  ORDER BY ts_ltz
          |  MEASURES
          |    A.price as price,
          |    A.tax as tax,
-         |    MATCH_ROWTIME() as matchRowtime
+         |    MATCH_ROWTIME(ts_ltz, price) as matchRowtime
          |  ONE ROW PER MATCH
          |  PATTERN (A)
          |  DEFINE
          |    A AS A.price > 0
          |) AS T
-         |GROUP BY symbol, matchRowtime, price, TUMBLE(matchRowtime, interval '3' second)
-         |)
+         |GROUP BY symbol, TUMBLE(matchRowtime, interval '3' second)
+         |""".stripMargin
+
+    assertThatThrownBy(() => util.verifyRelPlan(sqlQuery))
+      .hasMessageContaining("Invalid number of arguments to function 'MATCH_ROWTIME'.")
+      .isInstanceOf[ValidationException]
+  }
+
+  @Test
+  def testMatchRowtimeWithNonRowTimeAttributeAsArgs(): Unit = {
+    val sqlQuery =
+      s"""
+         |SELECT
+         |  symbol,
+         |  SUM(price) as price,
+         |  TUMBLE_ROWTIME(matchRowtime, interval '3' second) as rowTime,
+         |  TUMBLE_START(matchRowtime, interval '3' second) as startTime
+         |FROM Ticker
          |MATCH_RECOGNIZE (
          |  PARTITION BY symbol
-         |  ORDER BY matchRowtime
+         |  ORDER BY ts_ltz
          |  MEASURES
-         |    A.price as dPrice,
-         |    A.matchRowtime as matchRowtime
+         |    A.price as price,
+         |    A.tax as tax,
+         |    MATCH_ROWTIME(price) as matchRowtime
+         |  ONE ROW PER MATCH
          |  PATTERN (A)
          |  DEFINE
-         |    A AS A.matchRowtime >= (CURRENT_TIMESTAMP - INTERVAL '1' day)
-         |)
+         |    A AS A.price > 0
+         |) AS T
+         |GROUP BY symbol, TUMBLE(matchRowtime, interval '3' second)
          |""".stripMargin
-    util.verifyRelPlan(sqlQuery)
+
+    assertThatThrownBy(() => util.verifyRelPlan(sqlQuery))
+      .hasMessageContaining(
+        "The function MATCH_ROWTIME requires argument to be a row time attribute type, " +
+          "but is 'INTEGER'.")
+      .isInstanceOf[ValidationException]
+  }
+
+  @Test
+  def testMatchRowtimeWithRexCallAsArg(): Unit = {
+    val sqlQuery =
+      s"""
+         |SELECT
+         |  symbol,
+         |  SUM(price) as price,
+         |  TUMBLE_ROWTIME(matchRowtime, interval '3' second) as rowTime,
+         |  TUMBLE_START(matchRowtime, interval '3' second) as startTime
+         |FROM Ticker
+         |MATCH_RECOGNIZE (
+         |  PARTITION BY symbol
+         |  ORDER BY ts_ltz
+         |  MEASURES
+         |    A.price as price,
+         |    A.tax as tax,
+         |    MATCH_ROWTIME(ts_ltz + INTERVAL '1' SECOND) as matchRowtime
+         |  ONE ROW PER MATCH
+         |  PATTERN (A)
+         |  DEFINE
+         |    A AS A.price > 0
+         |) AS T
+         |GROUP BY symbol, TUMBLE(matchRowtime, interval '3' second)
+         |""".stripMargin
+
+    assertThatThrownBy(() => util.verifyRelPlan(sqlQuery))
+      .hasMessageContaining("The function MATCH_ROWTIME requires a field reference as argument, " +
+        "but actual argument is not a simple field reference.")
+      .isInstanceOf[ValidationException]
   }
 }

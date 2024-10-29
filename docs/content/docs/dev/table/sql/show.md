@@ -26,19 +26,27 @@ under the License.
 
 # SHOW Statements
 
-SHOW statements are used to list all catalogs, or list all databases in the current catalog, or list all tables/views in the current catalog and the current database, or show current catalog and database, or show create statement for specified table, or list all functions including system functions and user-defined functions in the current catalog and current database, or list only user-defined functions in the current catalog and current database, or list enabled module names, or list all loaded modules with enabled status in the current session.
+SHOW statements are used to list objects within their corresponding parent, such as catalogs, databases, tables and views, columns, functions, and modules. See the individual commands for more details and additional options.
+
+SHOW CREATE statements are used to print a DDL statement with which a given object can be created. The currently 'SHOW CREATE' statement is only available in printing DDL statement of the given table and view.
 
 Flink SQL supports the following SHOW statements for now:
 - SHOW CATALOGS
 - SHOW CURRENT CATALOG
+- SHOW CREATE CATALOG
 - SHOW DATABASES
 - SHOW CURRENT DATABASE
 - SHOW TABLES
 - SHOW CREATE TABLE
+- SHOW COLUMNS
+- SHOW PARTITIONS
+- SHOW PROCEDURES
 - SHOW VIEWS
+- SHOW CREATE VIEW
 - SHOW FUNCTIONS
 - SHOW MODULES
 - SHOW JARS
+- SHOW JOBS
 
 ## Run a SHOW statement
 
@@ -95,6 +103,22 @@ tEnv.executeSql("SHOW CURRENT CATALOG").print();
 // |      default_catalog |
 // +----------------------+
 
+// create a catalog
+tEnv.executeSql("CREATE CATALOG cat2 WITH (...)");
+
+// show create catalog
+tEnv.executeSql("SHOW CREATE CATALOG cat2").print();
+// +---------------------------------------------------------------------------------------------+
+// |                                                                                      result |
+// +---------------------------------------------------------------------------------------------+
+// | CREATE CATALOG `cat2` WITH (
+//   'default-database' = 'db',
+//   'type' = 'generic_in_memory'
+// )
+// |
+// +---------------------------------------------------------------------------------------------+
+// 1 row in set
+
 // show databases
 tEnv.executeSql("SHOW DATABASES").print();
 // +------------------+
@@ -129,9 +153,17 @@ tEnv.executeSql("SHOW CREATE TABLE my_table").print();
 //   ...
 // )
 
+// show columns
+tEnv.executeSql("SHOW COLUMNS FROM my_table LIKE '%f%'").print();
+// +--------+-------+------+-----+--------+-----------+
+// |   name |  type | null | key | extras | watermark |
+// +--------+-------+------+-----+--------+-----------+
+// | field2 | BYTES | true |     |        |           |
+// +--------+-------+------+-----+--------+-----------+
+
 
 // create a view
-tEnv.executeSql("CREATE VIEW my_view AS ...");
+tEnv.executeSql("CREATE VIEW my_view AS SELECT * FROM my_table");
 // show views
 tEnv.executeSql("SHOW VIEWS").print();
 // +-----------+
@@ -139,6 +171,12 @@ tEnv.executeSql("SHOW VIEWS").print();
 // +-----------+
 // |   my_view |
 // +-----------+
+
+// show create view
+tEnv.executeSql("SHOW CREATE VIEW my_view").print();
+// CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+// SELECT *
+// FROM `default_catalog`.`default_database`.`my_table`
 
 // show functions
 tEnv.executeSql("SHOW FUNCTIONS").print();
@@ -193,6 +231,22 @@ tEnv.executeSql("SHOW CATALOGS").print()
 // | default_catalog |
 // +-----------------+
 
+// create a catalog
+tEnv.executeSql("CREATE CATALOG cat2 WITH (...)")
+
+// show create catalog
+tEnv.executeSql("SHOW CREATE CATALOG cat2").print()
+// +---------------------------------------------------------------------------------------------+
+// |                                                                                      result |
+// +---------------------------------------------------------------------------------------------+
+// | CREATE CATALOG `cat2` WITH (
+//   'default-database' = 'db',
+//   'type' = 'generic_in_memory'
+// )
+// |
+// +---------------------------------------------------------------------------------------------+
+// 1 row in set
+
 // show databases
 tEnv.executeSql("SHOW DATABASES").print()
 // +------------------+
@@ -218,8 +272,17 @@ tEnv.executeSql("SHOW CREATE TABLE my_table").print()
 // ) WITH (
 //  ...
 // )
+
+// show columns
+tEnv.executeSql("SHOW COLUMNS FROM my_table LIKE '%f%'").print()
+// +--------+-------+------+-----+--------+-----------+
+// |   name |  type | null | key | extras | watermark |
+// +--------+-------+------+-----+--------+-----------+
+// | field2 | BYTES | true |     |        |           |
+// +--------+-------+------+-----+--------+-----------+
+
 // create a view
-tEnv.executeSql("CREATE VIEW my_view AS ...")
+tEnv.executeSql("CREATE VIEW my_view AS SELECT * FROM my_table")
 // show views
 tEnv.executeSql("SHOW VIEWS").print()
 // +-----------+
@@ -227,6 +290,12 @@ tEnv.executeSql("SHOW VIEWS").print()
 // +-----------+
 // |   my_view |
 // +-----------+
+
+// show create view
+tEnv.executeSql("SHOW CREATE VIEW my_view").print();
+// CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+// SELECT *
+// FROM `default_catalog`.`default_database`.`my_table`
 
 // show functions
 tEnv.executeSql("SHOW FUNCTIONS").print()
@@ -280,6 +349,22 @@ table_env.execute_sql("SHOW CATALOGS").print()
 # | default_catalog |
 # +-----------------+
 
+# create a catalog
+table_env.execute_sql("CREATE CATALOG cat2 WITH (...)")
+
+# show create catalog
+table_env.execute_sql("SHOW CREATE CATALOG cat2").print()
+# +---------------------------------------------------------------------------------------------+
+# |                                                                                      result |
+# +---------------------------------------------------------------------------------------------+
+# | CREATE CATALOG `cat2` WITH (
+#   'default-database' = 'db',
+#   'type' = 'generic_in_memory'
+# )
+#  |
+# +---------------------------------------------------------------------------------------------+
+# 1 row in set
+
 # show databases
 table_env.execute_sql("SHOW DATABASES").print()
 # +------------------+
@@ -305,8 +390,16 @@ table_env.executeSql("SHOW CREATE TABLE my_table").print()
 #   ...
 # )
 
+# show columns
+table_env.execute_sql("SHOW COLUMNS FROM my_table LIKE '%f%'").print()
+# +--------+-------+------+-----+--------+-----------+
+# |   name |  type | null | key | extras | watermark |
+# +--------+-------+------+-----+--------+-----------+
+# | field2 | BYTES | true |     |        |           |
+# +--------+-------+------+-----+--------+-----------+
+
 # create a view
-table_env.execute_sql("CREATE VIEW my_view AS ...")
+table_env.execute_sql("CREATE VIEW my_view AS SELECT * FROM my_table")
 # show views
 table_env.execute_sql("SHOW VIEWS").print()
 # +-----------+
@@ -314,6 +407,12 @@ table_env.execute_sql("SHOW VIEWS").print()
 # +-----------+
 # |   my_view |
 # +-----------+
+
+# show create view
+table_env.execute_sql("SHOW CREATE VIEW my_view").print()
+# CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+# SELECT *
+# FROM `default_catalog`.`default_database`.`my_table`
 
 # show functions
 table_env.execute_sql("SHOW FUNCTIONS").print()
@@ -352,6 +451,7 @@ table_env.execute_sql("SHOW FULL MODULES").print()
 # |        core |  true |
 # |        hive | false |
 # +-------------+-------+
+
 ```
 {{< /tab >}}
 {{< tab "SQL CLI" >}}
@@ -359,6 +459,14 @@ table_env.execute_sql("SHOW FULL MODULES").print()
 
 Flink SQL> SHOW CATALOGS;
 default_catalog
+
+Flink SQL> CREATE CATALOG cat2 WITH (...);
+[INFO] Execute statement succeeded.
+ 
+Flink SQL> SHOW CREATE CATALOG cat2;
+CREATE CATALOG `cat2` WITH (
+  ...
+)
 
 Flink SQL> SHOW DATABASES;
 default_database
@@ -376,11 +484,26 @@ CREATE TABLE `default_catalog`.`default_db`.`my_table` (
   ...
 )
 
-Flink SQL> CREATE VIEW my_view AS ...;
+
+Flink SQL> SHOW COLUMNS from MyUserTable LIKE '%f%';
++--------+-------+------+-----+--------+-----------+
+|   name |  type | null | key | extras | watermark |
++--------+-------+------+-----+--------+-----------+
+| field2 | BYTES | true |     |        |           |
++--------+-------+------+-----+--------+-----------+
+1 row in set
+
+
+Flink SQL> CREATE VIEW my_view AS SELECT * from my_table;
 [INFO] View has been created.
 
 Flink SQL> SHOW VIEWS;
 my_view
+
+Flink SQL> SHOW CREATE VIEW my_view;
+CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+SELECT *
+FROM `default_catalog`.`default_database`.`my_table`
 
 Flink SQL> SHOW FUNCTIONS;
 mod
@@ -411,8 +534,10 @@ Flink SQL> SHOW FULL MODULES;
 +-------------+------+
 1 row in set
 
+
 Flink SQL> SHOW JARS;
 /path/to/addedJar.jar
+
 
 ```
 {{< /tab >}}
@@ -423,10 +548,52 @@ Flink SQL> SHOW JARS;
 ## SHOW CATALOGS
 
 ```sql
-SHOW CATALOGS
+SHOW CATALOGS [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]
 ```
 
-Show all catalogs.
+Show all catalogs. Additionally, the output of this statement may be filtered by an optional matching pattern.
+
+**LIKE**
+Show all catalogs with a `LIKE` clause, whose name is similar to the `<sql_like_pattern>`.
+
+The syntax of the SQL pattern in the `LIKE` clause is the same as that of the `MySQL` dialect.
+* `%` matches any number of characters, even zero characters, and `\%` matches one `%` character.
+* `_` matches exactly one character, `\_` matches one `_` character.
+
+**ILIKE**
+The same behavior as `LIKE` but the SQL pattern is case-insensitive.
+
+### SHOW CATALOGS EXAMPLES
+
+Assumes that we have `catalog1` and `catalog2` in the session.
+
+- Show all catalogs.
+
+```sql
+show catalogs;
++-----------------+
+|    catalog name |
++-----------------+
+|        catalog1 |
+|        catalog2 |
+| default_catalog |
++-----------------+
+3 rows in set
+```
+
+- Show all catalogs, which are similar to the given SQL pattern.
+
+```sql
+show catalogs like '%log1';
+-- show catalogs ilike '%log1';
+-- show catalogs ilike '%LOG1';
++--------------+
+| catalog name |
++--------------+
+|     catalog1 |
++--------------+
+1 row in set
+```
 
 ## SHOW CURRENT CATALOG
 
@@ -436,13 +603,57 @@ SHOW CURRENT CATALOG
 
 Show current catalog.
 
+## SHOW CREATE CATALOG
+
+```sql
+SHOW CREATE CATALOG catalog_name
+```
+
+Show creation statement for an existing catalog.
+
+The output includes the catalog's name and relevant properties, which allows you to gain an intuitive understanding of the underlying catalog's metadata.
+
+Assumes that the catalog `cat2` is created as follows:
+```sql
+create catalog cat2 WITH (
+    'type'='generic_in_memory',
+    'default-database'='db'
+);
+```
+Shows the creation statement.
+```sql
+show create catalog cat2;
++---------------------------------------------------------------------------------------------+
+|                                                                                      result |
++---------------------------------------------------------------------------------------------+
+| CREATE CATALOG `cat2` WITH (
+  'default-database' = 'db',
+  'type' = 'generic_in_memory'
+)
+ |
++---------------------------------------------------------------------------------------------+
+1 row in set
+```
+
 ## SHOW DATABASES
 
 ```sql
-SHOW DATABASES
+SHOW DATABASES [ ( FROM | IN ) catalog_name] [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]
 ```
 
-Show all databases in the current catalog.
+Show all databases within optionally specified catalog. 
+If no catalog is specified, then the default catalog is used. 
+Additionally, a `<sql_like_pattern>` can be used to filter the databases.
+
+**LIKE**
+Show all databases with a `LIKE` clause, whose name is similar to the `<sql_like_pattern>`.
+
+The syntax of the SQL pattern in the `LIKE` clause is the same as that of the `MySQL` dialect.
+* `%` matches any number of characters, even zero characters, and `\%` matches one `%` character.
+* `_` matches exactly one character, `\_` matches one `_` character.
+
+**ILIKE**
+The same behavior as `LIKE` but the SQL pattern is case-insensitive.
 
 ## SHOW CURRENT DATABASE
 
@@ -455,40 +666,345 @@ Show current database.
 ## SHOW TABLES
 
 ```sql
-SHOW TABLES
+SHOW TABLES [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] LIKE <sql_like_pattern> ]
 ```
 
-Show all tables in the current catalog and the current database.
+Show all tables for an optionally specified database. If no database is specified then the tables are returned from the current database. Additionally, the output of this statement may be filtered by an optional matching pattern.
+
+**LIKE**
+Show all tables with given table name and optional `LIKE` clause, whose name is whether similar to the `<sql_like_pattern>`.
+
+The syntax of sql pattern in `LIKE` clause is the same as that of `MySQL` dialect.
+* `%` matches any number of characters, even zero characters, `\%` matches one `%` character.
+* `_` matches exactly one character, `\_` matches one `_` character.
+
+### SHOW TABLES EXAMPLES
+
+Assumes that the `db1` database located in `catalog1` catalog has the following tables:
+* person
+* dim
+
+the current database in session has the following tables:
+* items
+* orders
+
+- Shows all tables of the given database.
+
+```sql
+show tables from db1;
+-- show tables from catalog1.db1;
+-- show tables in db1;
+-- show tables in catalog1.db1;
++------------+
+| table name |
++------------+
+|        dim |
+|     person |
++------------+
+2 rows in set
+```
+
+- Shows all tables of the given database, which are similar to the given sql pattern.
+
+```sql
+show tables from db1 like '%n';
+-- show tables from catalog1.db1 like '%n';
+-- show tables in db1 like '%n';
+-- show tables in catalog1.db1 like '%n';
++------------+
+| table name |
++------------+
+|     person |
++------------+
+1 row in set
+```
+
+- Shows all tables of the given database, which are not similar to the given sql pattern.
+
+```sql
+show tables from db1 not like '%n';
+-- show tables from catalog1.db1 not like '%n';
+-- show tables in db1 not like '%n';
+-- show tables in catalog1.db1 not like '%n';
++------------+
+| table name |
++------------+
+|        dim |
++------------+
+1 row in set
+```
+
+- Shows all tables of the current database.
+
+```sql
+show tables;
++------------+
+| table name |
++------------+
+|      items |
+|     orders |
++------------+
+2 rows in set
+```
 
 
 ## SHOW CREATE TABLE
 
 ```sql
-SHOW CREATE TABLE
+SHOW CREATE TABLE [[catalog_name.]db_name.]table_name
 ```
 
 Show create table statement for specified table.
 
+The output includes the table name, column names, data types, constraints, comments, and configurations.
+
+It is a very useful statement when you need to understand the structure, configuration and constraints of an existing table or to recreate the table in another database.
+
+Assumes that the table `orders` is created as follows:
+```sql
+CREATE TABLE orders (
+  order_id BIGINT NOT NULL comment 'this is the primary key, named ''order_id''.',
+  product VARCHAR(32),
+  amount INT,
+  ts TIMESTAMP(3) comment 'notice: watermark, named ''ts''.',
+  ptime AS PROCTIME() comment 'notice: computed column, named ''ptime''.',
+  WATERMARK FOR ts AS ts - INTERVAL '1' SECOND,
+  CONSTRAINT `PK_order_id` PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datagen'
+);
+```
+Shows the creation statement.
+```sql
+show create table orders;
++---------------------------------------------------------------------------------------------+
+|                                                                                      result |
++---------------------------------------------------------------------------------------------+
+| CREATE TABLE `default_catalog`.`default_database`.`orders` (
+  `order_id` BIGINT NOT NULL COMMENT 'this is the primary key, named ''order_id''.',
+  `product` VARCHAR(32),
+  `amount` INT,
+  `ts` TIMESTAMP(3) COMMENT 'notice: watermark, named ''ts''.',
+  `ptime` AS PROCTIME() COMMENT 'notice: computed column, named ''ptime''.',
+  WATERMARK FOR `ts` AS `ts` - INTERVAL '1' SECOND,
+  CONSTRAINT `PK_order_id` PRIMARY KEY (`order_id`) NOT ENFORCED
+) WITH (
+  'connector' = 'datagen'
+)
+ |
++---------------------------------------------------------------------------------------------+
+1 row in set
+```
+
 <span class="label label-danger">Attention</span> Currently `SHOW CREATE TABLE` only supports table that is created by Flink SQL DDL.
+
+## SHOW COLUMNS
+
+```sql
+SHOW COLUMNS ( FROM | IN ) [[catalog_name.]database.]<table_name> [ [NOT] LIKE <sql_like_pattern>]
+```
+
+Show all columns of the table with given table name and optional like clause.
+
+**LIKE**
+Show all columns of the table with given table name and optional `LIKE` clause, whose name is whether similar to the `<sql_like_pattern>`.
+
+The syntax of sql pattern in `LIKE` clause is the same as that of `MySQL` dialect.
+
+### SHOW COLUMNS EXAMPLES
+
+Assumes that the table named `orders` in the `database1` database which is located in the `catalog1` catalog has the following structure:
+
+```sql
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    name |                        type |  null |       key |        extras |                  watermark |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    user |                      BIGINT | false | PRI(user) |               |                            |
+| product |                 VARCHAR(32) |  true |           |               |                            |
+|  amount |                         INT |  true |           |               |                            |
+|      ts |      TIMESTAMP(3) *ROWTIME* |  true |           |               | `ts` - INTERVAL '1' SECOND |
+|   ptime | TIMESTAMP_LTZ(3) *PROCTIME* | false |           | AS PROCTIME() |                            |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+```
+
+- Shows all columns of the given table.
+
+```sql
+show columns from orders;
+-- show columns from database1.orders;
+-- show columns from catalog1.database1.orders;
+-- show columns in orders;
+-- show columns in database1.orders;
+-- show columns in catalog1.database1.orders;
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    name |                        type |  null |       key |        extras |                  watermark |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    user |                      BIGINT | false | PRI(user) |               |                            |
+| product |                 VARCHAR(32) |  true |           |               |                            |
+|  amount |                         INT |  true |           |               |                            |
+|      ts |      TIMESTAMP(3) *ROWTIME* |  true |           |               | `ts` - INTERVAL '1' SECOND |
+|   ptime | TIMESTAMP_LTZ(3) *PROCTIME* | false |           | AS PROCTIME() |                            |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+5 rows in set
+```
+
+- Shows all columns of the given table, which are similar to the given sql pattern.
+
+```sql
+show columns from orders like '%r';
+-- show columns from database1.orders like '%r';
+-- show columns from catalog1.database1.orders like '%r';
+-- show columns in orders like '%r';
+-- show columns in database1.orders like '%r';
+-- show columns in catalog1.database1.orders like '%r';
++------+--------+-------+-----------+--------+-----------+
+| name |   type |  null |       key | extras | watermark |
++------+--------+-------+-----------+--------+-----------+
+| user | BIGINT | false | PRI(user) |        |           |
++------+--------+-------+-----------+--------+-----------+
+1 row in set
+```
+
+- Shows all columns of the given table, which are not similar to the given sql pattern.
+
+```sql
+show columns from orders not like '%_r';
+-- show columns from database1.orders not like '%_r';
+-- show columns from catalog1.database1.orders not like '%_r';
+-- show columns in orders not like '%_r';
+-- show columns in database1.orders not like '%_r';
+-- show columns in catalog1.database1.orders not like '%_r';
++---------+-----------------------------+-------+-----+---------------+----------------------------+
+|    name |                        type |  null | key |        extras |                  watermark |
++---------+-----------------------------+-------+-----+---------------+----------------------------+
+| product |                 VARCHAR(32) |  true |     |               |                            |
+|  amount |                         INT |  true |     |               |                            |
+|      ts |      TIMESTAMP(3) *ROWTIME* |  true |     |               | `ts` - INTERVAL '1' SECOND |
+|   ptime | TIMESTAMP_LTZ(3) *PROCTIME* | false |     | AS PROCTIME() |                            |
++---------+-----------------------------+-------+-----+---------------+----------------------------+
+4 rows in set
+```
+
+## SHOW PARTITIONS
+
+```sql
+SHOW PARTITIONS [[catalog_name.]database.]<table_name> [ PARTITION <partition_spec>]
+
+<partition_spec>:
+  (key1=val1, key2=val2, ...)
+```
+
+Show all partitions of the partitioned table with the given table name and optional partition clause.
+
+**PARTITION**
+Show all the partitions which are under the provided <partition_spec> in the given table.
+
+### SHOW PARTITIONS EXAMPLES
+
+Assumes that the partitioned table `table1` in the `database1` database which is located in the `catalog1` catalog has the following partitions:
+
+```sql
++---------+-----------------------------+
+|      id |                        date |
++---------+-----------------------------+
+|    1001 |                  2020-01-01 |
+|    1002 |                  2020-01-01 |
+|    1002 |                  2020-01-02 |
++---------+-----------------------------+
+```
+
+- Shows all partitions of the given table.
+
+```sql
+show partitions table1;
+-- show partitions database1.table1;
+-- show partitions catalog1.database1.table1;
++---------+-----------------------------+
+|      id |                        date |
++---------+-----------------------------+
+|    1001 |                  2020-01-01 |
+|    1002 |                  2020-01-01 |
+|    1002 |                  2020-01-02 |
++---------+-----------------------------+
+3 rows in set
+```
+
+- Shows all partitions of the given table with the given partition spec.
+
+```sql
+show partitions table1 partition (id=1002);
+-- show partitions database1.table1 partition (id=1002);
+-- show partitions catalog1.database1.table1 partition (id=1002);
++---------+-----------------------------+
+|      id |                        date |
++---------+-----------------------------+
+|    1002 |                  2020-01-01 |
+|    1002 |                  2020-01-02 |
++---------+-----------------------------+
+2 rows in set
+```
+
+## SHOW PROCEDURES
+
+```sql
+SHOW PROCEDURES [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]	
+```
+
+Show all procedures for an optionally specified database. If no database is specified then the procedures are returned from the current database. Additionally, a `<sql_like_pattern>` can be used to filter the procedures.
+
+**LIKE**
+Show all procedures with a `LIKE` clause, whose name is similar to the `<sql_like_pattern>`.
+
+The syntax of the SQL pattern in the `LIKE` clause is the same as that of the `MySQL` dialect.
+* `%` matches any number of characters, even zero characters, and `\%` matches one `%` character.
+* `_` matches exactly one character, `\_` matches one `_` character.
+
+**ILIKE**
+The same behavior as `LIKE` but the SQL pattern is case-insensitive.
 
 ## SHOW VIEWS
 
 ```sql
-SHOW VIEWS
+SHOW VIEWS [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] LIKE <sql_like_pattern> ]
 ```
 
-Show all views in the current catalog and the current database.
+Show all views for an optionally specified database. If no database is specified then the views are returned from the current database. Additionally, the output of this statement may be filtered by an optional matching pattern.
+
+**LIKE**
+Show all views with given view name and optional `LIKE` clause, whose name is whether similar to the `<sql_like_pattern>`.
+
+The syntax of sql pattern in `LIKE` clause is the same as that of `MySQL` dialect.
+* `%` matches any number of characters, even zero characters, `\%` matches one `%` character.
+* `_` matches exactly one character, `\_` matches one `_` character.
+
+## SHOW CREATE VIEW
+
+```sql
+SHOW CREATE VIEW [catalog_name.][db_name.]view_name
+```
+
+Show create view statement for specified view.
 
 ## SHOW FUNCTIONS
 
 ```sql
-SHOW [USER] FUNCTIONS
+SHOW [USER] FUNCTIONS [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]	
 ```
 
-Show all functions including system functions and user-defined functions in the current catalog and current database.
+Show all functions including system functions and user-defined functions for an optionally specified database. If no database is specified then the functions are returned from the current database. Additionally, a `<sql_like_pattern>` can be used to filter the functions.
 
 **USER**
-Show only user-defined functions in the current catalog and current database.
+Show only user-defined functions for an optionally specified database. If no database is specified then the functions are returned from the current database. Additionally, a `<sql_like_pattern>` can be used to filter the functions.
+
+**LIKE**
+Show all functions with a `LIKE` clause, whose name is similar to the `<sql_like_pattern>`.
+
+The syntax of the SQL pattern in the `LIKE` clause is the same as that of the `MySQL` dialect.
+* `%` matches any number of characters, even zero characters, and `\%` matches one `%` character.
+* `_` matches exactly one character, `\_` matches one `_` character.
+
+**ILIKE**
+The same behavior as `LIKE` but the SQL pattern is case-insensitive.
 
 ## SHOW MODULES
 
@@ -509,6 +1025,16 @@ SHOW JARS
 
 Show all added jars in the session classloader which are added by [`ADD JAR`]({{< ref "docs/dev/table/sql/jar" >}}#add-jar) statements.
 
-<span class="label label-danger">Attention</span> Currently `SHOW JARS` only works in the [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}).
+<span class="label label-danger">Attention</span> Currently `SHOW JARS` statements only work in the [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}) or [SQL Gateway]({{< ref "docs/dev/table/sql-gateway/overview" >}}).
+
+## SHOW JOBS
+
+```sql
+SHOW JOBS
+```
+
+Show the jobs in the Flink cluster.
+
+<span class="label label-danger">Attention</span> Currently `SHOW JOBS` statements only work in the [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}) or [SQL Gateway]({{< ref "docs/dev/table/sql-gateway/overview" >}}).
 
 {{< top >}}

@@ -27,13 +27,18 @@ import org.apache.flink.runtime.blob.PermanentBlobCache;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.blob.PermanentBlobService;
 import org.apache.flink.runtime.blob.VoidBlobStore;
+import org.apache.flink.testutils.junit.FailsInGHAContainerWithRootUser;
+import org.apache.flink.util.FlinkUserCodeClassLoaders;
 import org.apache.flink.util.OperatingSystem;
 import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.UserCodeClassLoader;
 
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 import org.junit.rules.TemporaryFolder;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import java.io.File;
 import java.io.IOException;
@@ -41,12 +46,13 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
-import static org.apache.flink.runtime.blob.BlobServerCleanupTest.checkFileCountForJob;
-import static org.apache.flink.runtime.blob.BlobServerCleanupTest.checkFilesExist;
+import static org.apache.flink.runtime.blob.TestingBlobHelpers.checkFileCountForJob;
+import static org.apache.flink.runtime.blob.TestingBlobHelpers.checkFilesExist;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.Assert.assertEquals;
@@ -57,9 +63,17 @@ import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 
 /** Tests for {@link BlobLibraryCacheManager}. */
+@RunWith(Parameterized.class)
 public class BlobLibraryCacheManagerTest extends TestLogger {
 
     @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
+
+    @Parameterized.Parameters(name = "Use system class loader: {0}")
+    public static List<Boolean> useSystemClassLoader() {
+        return Arrays.asList(true, false);
+    }
+
+    @Parameterized.Parameter public boolean wrapsSystemClassLoader;
 
     /**
      * Tests that the {@link BlobLibraryCacheManager} cleans up after the class loader leases for
@@ -80,15 +94,17 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
 
         try {
             Configuration config = new Configuration();
-            config.setString(
-                    BlobServerOptions.STORAGE_DIRECTORY,
-                    temporaryFolder.newFolder().getAbsolutePath());
-            config.setLong(BlobServerOptions.CLEANUP_INTERVAL, 1L);
+            config.set(BlobServerOptions.CLEANUP_INTERVAL, 1L);
 
-            server = new BlobServer(config, new VoidBlobStore());
+            server = new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore());
             server.start();
             InetSocketAddress serverAddress = new InetSocketAddress("localhost", server.getPort());
-            cache = new PermanentBlobCache(config, new VoidBlobStore(), serverAddress);
+            cache =
+                    new PermanentBlobCache(
+                            config,
+                            temporaryFolder.newFolder(),
+                            new VoidBlobStore(),
+                            serverAddress);
 
             keys1.add(server.putPermanent(jobId1, buf));
             buf[0] += 1;
@@ -114,7 +130,7 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
             assertEquals(1, libCache.getNumberOfManagedJobs());
             assertEquals(1, libCache.getNumberOfReferenceHolders(jobId1));
             assertEquals(0, libCache.getNumberOfReferenceHolders(jobId2));
-            assertEquals(2, checkFilesExist(jobId1, keys1, cache, true));
+            assertEquals(2, checkFilesExist(jobId1, keys1, cache, false));
             checkFileCountForJob(2, jobId1, server);
             checkFileCountForJob(2, jobId1, cache);
             assertEquals(0, checkFilesExist(jobId2, keys2, cache, false));
@@ -145,10 +161,10 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
             assertEquals(2, libCache.getNumberOfManagedJobs());
             assertEquals(1, libCache.getNumberOfReferenceHolders(jobId1));
             assertEquals(1, libCache.getNumberOfReferenceHolders(jobId2));
-            assertEquals(2, checkFilesExist(jobId1, keys1, cache, true));
+            assertEquals(2, checkFilesExist(jobId1, keys1, cache, false));
             checkFileCountForJob(2, jobId1, server);
             checkFileCountForJob(2, jobId1, cache);
-            assertEquals(1, checkFilesExist(jobId2, keys2, cache, true));
+            assertEquals(1, checkFilesExist(jobId2, keys2, cache, false));
             checkFileCountForJob(1, jobId2, server);
             checkFileCountForJob(1, jobId2, cache);
 
@@ -157,10 +173,10 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
             assertEquals(1, libCache.getNumberOfManagedJobs());
             assertEquals(0, libCache.getNumberOfReferenceHolders(jobId1));
             assertEquals(1, libCache.getNumberOfReferenceHolders(jobId2));
-            assertEquals(2, checkFilesExist(jobId1, keys1, cache, true));
+            assertEquals(2, checkFilesExist(jobId1, keys1, cache, false));
             checkFileCountForJob(2, jobId1, server);
             checkFileCountForJob(2, jobId1, cache);
-            assertEquals(1, checkFilesExist(jobId2, keys2, cache, true));
+            assertEquals(1, checkFilesExist(jobId2, keys2, cache, false));
             checkFileCountForJob(1, jobId2, server);
             checkFileCountForJob(1, jobId2, cache);
 
@@ -169,10 +185,10 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
             assertEquals(0, libCache.getNumberOfManagedJobs());
             assertEquals(0, libCache.getNumberOfReferenceHolders(jobId1));
             assertEquals(0, libCache.getNumberOfReferenceHolders(jobId2));
-            assertEquals(2, checkFilesExist(jobId1, keys1, cache, true));
+            assertEquals(2, checkFilesExist(jobId1, keys1, cache, false));
             checkFileCountForJob(2, jobId1, server);
             checkFileCountForJob(2, jobId1, cache);
-            assertEquals(1, checkFilesExist(jobId2, keys2, cache, true));
+            assertEquals(1, checkFilesExist(jobId2, keys2, cache, false));
             checkFileCountForJob(1, jobId2, server);
             checkFileCountForJob(1, jobId2, cache);
 
@@ -211,15 +227,17 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
 
         try {
             Configuration config = new Configuration();
-            config.setString(
-                    BlobServerOptions.STORAGE_DIRECTORY,
-                    temporaryFolder.newFolder().getAbsolutePath());
-            config.setLong(BlobServerOptions.CLEANUP_INTERVAL, 1L);
+            config.set(BlobServerOptions.CLEANUP_INTERVAL, 1L);
 
-            server = new BlobServer(config, new VoidBlobStore());
+            server = new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore());
             server.start();
             InetSocketAddress serverAddress = new InetSocketAddress("localhost", server.getPort());
-            cache = new PermanentBlobCache(config, new VoidBlobStore(), serverAddress);
+            cache =
+                    new PermanentBlobCache(
+                            config,
+                            temporaryFolder.newFolder(),
+                            new VoidBlobStore(),
+                            serverAddress);
 
             keys.add(server.putPermanent(jobId, buf));
             buf[0] += 1;
@@ -307,6 +325,7 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
     }
 
     @Test
+    @Category(FailsInGHAContainerWithRootUser.class)
     public void testRegisterAndDownload() throws IOException {
         assumeTrue(!OperatingSystem.isWindows()); // setWritable doesn't work on Windows.
 
@@ -318,15 +337,17 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
         try {
             // create the blob transfer services
             Configuration config = new Configuration();
-            config.setString(
-                    BlobServerOptions.STORAGE_DIRECTORY,
-                    temporaryFolder.newFolder().getAbsolutePath());
-            config.setLong(BlobServerOptions.CLEANUP_INTERVAL, 1_000_000L);
+            config.set(BlobServerOptions.CLEANUP_INTERVAL, 1_000_000L);
 
-            server = new BlobServer(config, new VoidBlobStore());
+            server = new BlobServer(config, temporaryFolder.newFolder(), new VoidBlobStore());
             server.start();
             InetSocketAddress serverAddress = new InetSocketAddress("localhost", server.getPort());
-            cache = new PermanentBlobCache(config, new VoidBlobStore(), serverAddress);
+            cache =
+                    new PermanentBlobCache(
+                            config,
+                            temporaryFolder.newFolder(),
+                            new VoidBlobStore(),
+                            serverAddress);
 
             // upload some meaningless data to the server
             PermanentBlobKey dataKey1 =
@@ -471,7 +492,9 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
         final LibraryCacheManager.ClassLoaderLease classLoaderLease2 =
                 libraryCacheManager.registerClassLoaderLease(jobId);
 
-        classLoaderLease1.getOrResolveClassLoader(Collections.emptyList(), Collections.emptyList());
+        UserCodeClassLoader userCodeClassLoader =
+                classLoaderLease1.getOrResolveClassLoader(
+                        Collections.emptyList(), Collections.emptyList());
 
         classLoaderLease1.release();
 
@@ -479,7 +502,12 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
 
         classLoaderLease2.release();
 
-        assertTrue(classLoader.isClosed());
+        if (wrapsSystemClassLoader) {
+            assertEquals(userCodeClassLoader.asClassLoader(), ClassLoader.getSystemClassLoader());
+            assertFalse(classLoader.isClosed());
+        } else {
+            assertTrue(classLoader.isClosed());
+        }
     }
 
     @Test
@@ -524,11 +552,18 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
 
         final LibraryCacheManager.ClassLoaderLease classLoaderLease =
                 libraryCacheManager.registerClassLoaderLease(new JobID());
-        classLoaderLease.getOrResolveClassLoader(Collections.emptyList(), Collections.emptyList());
+        UserCodeClassLoader userCodeClassLoader =
+                classLoaderLease.getOrResolveClassLoader(
+                        Collections.emptyList(), Collections.emptyList());
 
         libraryCacheManager.shutdown();
 
-        assertTrue(classLoader.isClosed());
+        if (wrapsSystemClassLoader) {
+            assertEquals(userCodeClassLoader.asClassLoader(), ClassLoader.getSystemClassLoader());
+            assertFalse(classLoader.isClosed());
+        } else {
+            assertTrue(classLoader.isClosed());
+        }
     }
 
     @Test
@@ -600,11 +635,12 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
 
         private TestingBlobLibraryCacheManagerBuilder() throws IOException {
             final Configuration blobClientConfig = new Configuration();
-            blobClientConfig.setString(
-                    BlobServerOptions.STORAGE_DIRECTORY,
-                    temporaryFolder.newFolder().getAbsolutePath());
             this.permanentBlobCache =
-                    new PermanentBlobCache(blobClientConfig, new VoidBlobStore(), null);
+                    new PermanentBlobCache(
+                            blobClientConfig,
+                            temporaryFolder.newFolder(),
+                            new VoidBlobStore(),
+                            null);
         }
 
         public TestingBlobLibraryCacheManagerBuilder setPermanentBlobCache(
@@ -620,7 +656,8 @@ public class BlobLibraryCacheManagerTest extends TestLogger {
         }
 
         BlobLibraryCacheManager build() {
-            return new BlobLibraryCacheManager(permanentBlobCache, classLoaderFactory);
+            return new BlobLibraryCacheManager(
+                    permanentBlobCache, classLoaderFactory, wrapsSystemClassLoader);
         }
     }
 

@@ -19,6 +19,8 @@
 package org.apache.flink.connectors.hive.read;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.connector.file.table.PartitionTimeExtractor;
+import org.apache.flink.connectors.hive.HiveOptions.PartitionOrder;
 import org.apache.flink.connectors.hive.HiveTablePartition;
 import org.apache.flink.connectors.hive.JobConfWrapper;
 import org.apache.flink.connectors.hive.util.HiveConfUtils;
@@ -27,9 +29,6 @@ import org.apache.flink.table.catalog.hive.client.HiveMetastoreClientWrapper;
 import org.apache.flink.table.catalog.hive.client.HiveShim;
 import org.apache.flink.table.catalog.hive.util.HiveReflectionUtils;
 import org.apache.flink.table.data.TimestampData;
-import org.apache.flink.table.filesystem.FileSystemConnectorOptions.PartitionOrder;
-import org.apache.flink.table.filesystem.PartitionTimeExtractor;
-import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.utils.PartitionPathUtils;
 
 import org.apache.hadoop.fs.FileStatus;
@@ -46,13 +45,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.stream.Collectors;
 
-import static org.apache.flink.table.filesystem.DefaultPartTimeExtractor.toMills;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_CLASS;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_KIND;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN;
-import static org.apache.flink.table.filesystem.FileSystemConnectorOptions.STREAMING_SOURCE_PARTITION_ORDER;
+import static org.apache.flink.connector.file.table.DefaultPartTimeExtractor.toMills;
+import static org.apache.flink.connector.file.table.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_CLASS;
+import static org.apache.flink.connector.file.table.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_KIND;
+import static org.apache.flink.connector.file.table.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_FORMATTER;
+import static org.apache.flink.connector.file.table.FileSystemConnectorOptions.PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN;
+import static org.apache.flink.connectors.hive.HiveOptions.STREAMING_SOURCE_PARTITION_ORDER;
 
 /** Base class for table partition fetcher context. */
 public abstract class HivePartitionFetcherContextBase<P> implements HivePartitionContext<P> {
@@ -62,8 +61,6 @@ public abstract class HivePartitionFetcherContextBase<P> implements HivePartitio
     protected final HiveShim hiveShim;
     protected final JobConfWrapper confWrapper;
     protected final List<String> partitionKeys;
-    protected final DataType[] fieldTypes;
-    protected final String[] fieldNames;
     protected final Configuration configuration;
     protected final String defaultPartitionName;
     protected final PartitionOrder partitionOrder;
@@ -74,24 +71,18 @@ public abstract class HivePartitionFetcherContextBase<P> implements HivePartitio
     protected transient Path tableLocation;
     private transient PartitionTimeExtractor extractor;
     private transient Table table;
-    // remember the map from partition to its create time
-    private transient Map<List<String>, Long> partValuesToCreateTime;
 
     public HivePartitionFetcherContextBase(
             ObjectPath tablePath,
             HiveShim hiveShim,
             JobConfWrapper confWrapper,
             List<String> partitionKeys,
-            DataType[] fieldTypes,
-            String[] fieldNames,
             Configuration configuration,
             String defaultPartitionName) {
         this.tablePath = tablePath;
         this.hiveShim = hiveShim;
         this.confWrapper = confWrapper;
         this.partitionKeys = partitionKeys;
-        this.fieldTypes = fieldTypes;
-        this.fieldNames = fieldNames;
         this.configuration = configuration;
         this.defaultPartitionName = defaultPartitionName;
         this.partitionOrder = configuration.get(STREAMING_SOURCE_PARTITION_ORDER);
@@ -107,6 +98,7 @@ public abstract class HivePartitionFetcherContextBase<P> implements HivePartitio
 
         String extractorKind = configuration.get(PARTITION_TIME_EXTRACTOR_KIND);
         String extractorClass = configuration.get(PARTITION_TIME_EXTRACTOR_CLASS);
+        String formatterPattern = configuration.get(PARTITION_TIME_EXTRACTOR_TIMESTAMP_FORMATTER);
         String extractorPattern = configuration.get(PARTITION_TIME_EXTRACTOR_TIMESTAMP_PATTERN);
 
         extractor =
@@ -114,9 +106,9 @@ public abstract class HivePartitionFetcherContextBase<P> implements HivePartitio
                         Thread.currentThread().getContextClassLoader(),
                         extractorKind,
                         extractorClass,
-                        extractorPattern);
+                        extractorPattern,
+                        formatterPattern);
         tableLocation = new Path(table.getSd().getLocation());
-        partValuesToCreateTime = new HashMap<>();
     }
 
     @Override
@@ -134,22 +126,18 @@ public abstract class HivePartitionFetcherContextBase<P> implements HivePartitio
                 }
                 break;
             case CREATE_TIME:
+                Map<List<String>, Long> partValuesToCreateTime = new HashMap<>();
                 partitionNames =
                         metaStoreClient.listPartitionNames(
                                 tablePath.getDatabaseName(),
                                 tablePath.getObjectName(),
                                 Short.MAX_VALUE);
-                List<String> newNames =
-                        partitionNames.stream()
-                                .filter(
-                                        n ->
-                                                !partValuesToCreateTime.containsKey(
-                                                        extractPartitionValues(n)))
-                                .collect(Collectors.toList());
-                List<Partition> newPartitions =
+                List<Partition> partitions =
                         metaStoreClient.getPartitionsByNames(
-                                tablePath.getDatabaseName(), tablePath.getObjectName(), newNames);
-                for (Partition partition : newPartitions) {
+                                tablePath.getDatabaseName(),
+                                tablePath.getObjectName(),
+                                partitionNames);
+                for (Partition partition : partitions) {
                     partValuesToCreateTime.put(
                             partition.getValues(), getPartitionCreateTime(partition));
                 }
@@ -230,9 +218,6 @@ public abstract class HivePartitionFetcherContextBase<P> implements HivePartitio
 
     @Override
     public void close() throws Exception {
-        if (partValuesToCreateTime != null) {
-            partValuesToCreateTime.clear();
-        }
         if (this.metaStoreClient != null) {
             this.metaStoreClient.close();
         }

@@ -44,18 +44,18 @@ In order to use Flink's Kubernetes HA services you must fulfill the following pr
 
 In order to start an HA-cluster you have to configure the following configuration keys:
 
-- [high-availability]({{< ref "docs/deployment/config" >}}#high-availability-1) (required): 
-The `high-availability` option has to be set to `KubernetesHaServicesFactory`.
+- [high-availability.type]({{< ref "docs/deployment/config" >}}#high-availability-type) (required): 
+The `high-availability.type` option has to be set to `kubernetes`.
 
 ```yaml
-high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+high-availability.type: kubernetes
 ```
 
 - [high-availability.storageDir]({{< ref "docs/deployment/config" >}}#high-availability-storagedir) (required): 
 JobManager metadata is persisted in the file system `high-availability.storageDir` and only a pointer to this state is stored in Kubernetes.
 
 ```yaml
-high-availability.storageDir: s3:///flink/recovery
+high-availability.storageDir: s3://flink/recovery
 ```
 
 The `storageDir` stores all metadata needed to recover a JobManager failure.
@@ -69,11 +69,11 @@ kubernetes.cluster-id: cluster1337
 
 ### Example configuration
 
-Configure high availability mode in `conf/flink-conf.yaml`:
+Configure high availability mode in [Flink configuration file]({{< ref "docs/deployment/config#flink-configuration-file" >}}):
 
 ```yaml
 kubernetes.cluster-id: <cluster-id>
-high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+high-availability.type: kubernetes
 high-availability.storageDir: hdfs:///flink/recovery
 ```
 

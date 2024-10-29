@@ -25,6 +25,8 @@ specific language governing permissions and limitations
 under the License.
 --> 
 
+# Versioned Tables
+
 Flink SQL operates over dynamic tables that evolve, which may either be append-only or updating. 
 Versioned tables represent a special type of updating table that remembers the past values for each key.
 
@@ -125,6 +127,7 @@ The `JSON` format does not support native changelog semantics, so Flink can only
 +(INSERT)        09:00:00      Euro       114
 +(INSERT)        09:00:00      USD        1
 +(INSERT)        11:15:00      Euro       119
++(INSERT)        11:45:00      Pounds     107
 +(INSERT)        11:49:00      Pounds     108
 ```
 
@@ -150,9 +153,9 @@ WHERE rownum = 1;
 +(INSERT)        09:00:00      Yen        102
 +(INSERT)        09:00:00      Euro       114
 +(INSERT)        09:00:00      USD        1
-+(UPDATE_AFTER)  10:45:00      Euro       116
 +(UPDATE_AFTER)  11:15:00      Euro       119
-+(INSERT)        11:49:00      Pounds     108
++(INSERT)        11:45:00      Pounds     107
++(UPDATE_AFTER)  11:49:00      Pounds     108
 ```
 
 Flink has a special optimization step that will efficiently transform this query into a versioned

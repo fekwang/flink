@@ -42,18 +42,18 @@ Kubernetes 高可用服务只能在部署到 Kubernetes 时使用。因此，当
 
 为了启用高可用集群（HA-cluster），你必须设置以下配置项:
 
-- [high-availability]({{< ref "docs/deployment/config" >}}#high-availability-1) (必要的):
-`high-availability` 选项必须设置为 `KubernetesHaServicesFactory`.
+- [high-availability.type]({{< ref "docs/deployment/config" >}}#high-availability-type) (必要的):
+`high-availability.type` 选项必须设置为 `kubernetes`.
 
 ```yaml
-high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+high-availability.type: kubernetes
 ```
 
 - [high-availability.storageDir]({{< ref "docs/deployment/config" >}}#high-availability-storagedir) (必要的):
 JobManager 元数据持久化到文件系统 `high-availability.storageDir` 配置的路径中，并且在 Kubernetes 中只能有一个目录指向此位置。
 
 ```yaml
-high-availability.storageDir: s3:///flink/recovery
+high-availability.storageDir: s3://flink/recovery
 ```
 
   `storageDir` 存储要从 JobManager 失败恢复时所需的所有元数据。
@@ -67,11 +67,11 @@ kubernetes.cluster-id: cluster1337
 
 ### 配置示例
 
-在 `conf/flink-conf.yaml` 中配置高可用模式:
+在 [Flink 配置文件]({{< ref "docs/deployment/config#flink-配置文件" >}}) 中配置高可用模式:
 
 ```yaml
 kubernetes.cluster-id: <cluster-id>
-high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+high-availability.type: kubernetes
 high-availability.storageDir: hdfs:///flink/recovery
 ```
 

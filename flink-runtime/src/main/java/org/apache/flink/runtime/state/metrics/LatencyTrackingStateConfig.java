@@ -20,7 +20,7 @@ package org.apache.flink.runtime.state.metrics;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.configuration.StateBackendOptions;
+import org.apache.flink.configuration.StateLatencyTrackOptions;
 import org.apache.flink.metrics.MetricGroup;
 import org.apache.flink.util.Preconditions;
 
@@ -35,9 +35,14 @@ public class LatencyTrackingStateConfig {
     private final boolean enabled;
     private final int sampleInterval;
     private final int historySize;
+    private final boolean stateNameAsVariable;
 
     LatencyTrackingStateConfig(
-            MetricGroup metricGroup, boolean enabled, int sampleInterval, int historySize) {
+            MetricGroup metricGroup,
+            boolean enabled,
+            int sampleInterval,
+            int historySize,
+            boolean stateNameAsVariable) {
         if (enabled) {
             Preconditions.checkNotNull(
                     metricGroup, "Metric group cannot be null if latency tracking is enabled.");
@@ -47,6 +52,7 @@ public class LatencyTrackingStateConfig {
         this.enabled = enabled;
         this.sampleInterval = sampleInterval;
         this.historySize = historySize;
+        this.stateNameAsVariable = stateNameAsVariable;
     }
 
     public boolean isEnabled() {
@@ -65,6 +71,10 @@ public class LatencyTrackingStateConfig {
         return sampleInterval;
     }
 
+    public boolean isStateNameAsVariable() {
+        return stateNameAsVariable;
+    }
+
     public static LatencyTrackingStateConfig disabled() {
         return newBuilder().setEnabled(false).build();
     }
@@ -76,10 +86,13 @@ public class LatencyTrackingStateConfig {
     public static class Builder implements Serializable {
         private static final long serialVersionUID = 1L;
 
-        private boolean enabled = StateBackendOptions.LATENCY_TRACK_ENABLED.defaultValue();
+        private boolean enabled = StateLatencyTrackOptions.LATENCY_TRACK_ENABLED.defaultValue();
         private int sampleInterval =
-                StateBackendOptions.LATENCY_TRACK_SAMPLE_INTERVAL.defaultValue();
-        private int historySize = StateBackendOptions.LATENCY_TRACK_HISTORY_SIZE.defaultValue();
+                StateLatencyTrackOptions.LATENCY_TRACK_SAMPLE_INTERVAL.defaultValue();
+        private int historySize =
+                StateLatencyTrackOptions.LATENCY_TRACK_HISTORY_SIZE.defaultValue();
+        private boolean stateNameAsVariable =
+                StateLatencyTrackOptions.LATENCY_TRACK_STATE_NAME_AS_VARIABLE.defaultValue();
         private MetricGroup metricGroup;
 
         public Builder setEnabled(boolean enabled) {
@@ -97,22 +110,30 @@ public class LatencyTrackingStateConfig {
             return this;
         }
 
+        public Builder setStateNameAsVariable(boolean stateNameAsVariable) {
+            this.stateNameAsVariable = stateNameAsVariable;
+            return this;
+        }
+
         public Builder setMetricGroup(MetricGroup metricGroup) {
             this.metricGroup = metricGroup;
             return this;
         }
 
         public Builder configure(ReadableConfig config) {
-            this.setEnabled(config.get(StateBackendOptions.LATENCY_TRACK_ENABLED))
+            this.setEnabled(config.get(StateLatencyTrackOptions.LATENCY_TRACK_ENABLED))
                     .setSampleInterval(
-                            config.get(StateBackendOptions.LATENCY_TRACK_SAMPLE_INTERVAL))
-                    .setHistorySize(config.get(StateBackendOptions.LATENCY_TRACK_HISTORY_SIZE));
+                            config.get(StateLatencyTrackOptions.LATENCY_TRACK_SAMPLE_INTERVAL))
+                    .setHistorySize(config.get(StateLatencyTrackOptions.LATENCY_TRACK_HISTORY_SIZE))
+                    .setStateNameAsVariable(
+                            config.get(
+                                    StateLatencyTrackOptions.LATENCY_TRACK_STATE_NAME_AS_VARIABLE));
             return this;
         }
 
         public LatencyTrackingStateConfig build() {
             return new LatencyTrackingStateConfig(
-                    metricGroup, enabled, sampleInterval, historySize);
+                    metricGroup, enabled, sampleInterval, historySize, stateNameAsVariable);
         }
     }
 }

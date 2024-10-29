@@ -17,7 +17,7 @@
 
 package org.apache.flink.state.changelog;
 
-import org.apache.flink.core.memory.DataOutputViewStreamWrapper;
+import org.apache.flink.core.memory.DataOutputView;
 import org.apache.flink.util.function.ThrowingConsumer;
 
 import java.io.IOException;
@@ -101,21 +101,24 @@ class TestChangeLoggerKv<State> implements KvStateChangeLogger<State, String> {
 
     @Override
     public void valueElementAdded(
-            ThrowingConsumer<DataOutputViewStreamWrapper, IOException> dataSerializer, String ns) {
+            ThrowingConsumer<DataOutputView, IOException> dataSerializer, String ns) {
         stateElementAdded = true;
     }
 
     @Override
     public void valueElementAddedOrUpdated(
-            ThrowingConsumer<DataOutputViewStreamWrapper, IOException> dataSerializer, String ns) {
+            ThrowingConsumer<DataOutputView, IOException> dataSerializer, String ns) {
         stateElementChanged = true;
     }
 
     @Override
     public void valueElementRemoved(
-            ThrowingConsumer<DataOutputViewStreamWrapper, IOException> dataSerializer, String ns) {
+            ThrowingConsumer<DataOutputView, IOException> dataSerializer, String ns) {
         stateElementRemoved = true;
     }
+
+    @Override
+    public void resetWritingMetaFlag() {}
 
     @Override
     public void namespacesMerged(String target, Collection<String> sources) {
@@ -131,4 +134,7 @@ class TestChangeLoggerKv<State> implements KvStateChangeLogger<State, String> {
                 || stateElementRemoved
                 || stateMerged;
     }
+
+    @Override
+    public void close() {}
 }

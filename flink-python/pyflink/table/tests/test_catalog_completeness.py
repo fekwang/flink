@@ -44,7 +44,8 @@ class CatalogAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTestCase
             'getFactory',
             'getTableFactory',
             'getFunctionDefinitionFactory',
-            'listPartitionsByFilter'}
+            'listPartitionsByFilter',
+            'supportsManagedTable'}
 
 
 class CatalogDatabaseAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTestCase):
@@ -78,7 +79,7 @@ class CatalogBaseTableAPICompletenessTests(PythonAPICompletenessTestCase, PyFlin
 
     @classmethod
     def excluded_methods(cls):
-        return {'getUnresolvedSchema', 'getTableKind'}
+        return {'getUnresolvedSchema', 'getTableKind', 'getSchema'}
 
 
 class CatalogFunctionAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTestCase):
@@ -94,6 +95,10 @@ class CatalogFunctionAPICompletenessTests(PythonAPICompletenessTestCase, PyFlink
     @classmethod
     def java_class(cls):
         return "org.apache.flink.table.catalog.CatalogFunction"
+
+    @classmethod
+    def excluded_methods(cls):
+        return {'getFunctionResources'}
 
 
 class CatalogPartitionAPICompletenessTests(PythonAPICompletenessTestCase, PyFlinkTestCase):

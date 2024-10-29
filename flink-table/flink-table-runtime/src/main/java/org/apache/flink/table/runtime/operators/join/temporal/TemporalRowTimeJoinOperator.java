@@ -19,12 +19,12 @@
 package org.apache.flink.table.runtime.operators.join.temporal;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.functions.DefaultOpenContext;
 import org.apache.flink.api.common.state.MapState;
 import org.apache.flink.api.common.state.MapStateDescriptor;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
 import org.apache.flink.api.common.typeinfo.Types;
-import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.state.VoidNamespace;
 import org.apache.flink.runtime.state.VoidNamespaceSerializer;
 import org.apache.flink.streaming.api.operators.InternalTimer;
@@ -148,7 +148,7 @@ public class TemporalRowTimeJoinOperator extends BaseTwoInputStreamOperatorWithS
         joinCondition =
                 generatedJoinCondition.newInstance(getRuntimeContext().getUserCodeClassLoader());
         joinCondition.setRuntimeContext(getRuntimeContext());
-        joinCondition.open(new Configuration());
+        joinCondition.open(DefaultOpenContext.INSTANCE);
 
         nextLeftIndex =
                 getRuntimeContext()
@@ -337,8 +337,8 @@ public class TemporalRowTimeJoinOperator extends BaseTwoInputStreamOperatorWithS
      * <p>If left time is 6, the valid period should be [4, 7), data 4(+U) should be joined.
      *
      * <p>If left time is 10, the valid period should be [9, 12), but data 9(-D) is a DELETE message
-     * which means the the correspond version has no data in period [9, 12), data 9(-D) should not
-     * be correlated.
+     * which means the correspond version has no data in period [9, 12), data 9(-D) should not be
+     * correlated.
      *
      * @return found element or {@code Optional.empty} If such row was not found (either {@code
      *     rightRowsSorted} is empty or all {@code rightRowsSorted} are are newer).

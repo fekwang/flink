@@ -21,6 +21,7 @@ package org.apache.flink.table.factories;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.table.legacy.factories.TableFactory;
 import org.apache.flink.table.module.Module;
 import org.apache.flink.table.module.ModuleException;
 
@@ -58,6 +59,7 @@ public interface ModuleFactory extends TableFactory, Factory {
     }
 
     /** Context provided when a module is created. */
+    @PublicEvolving
     interface Context {
         /**
          * Returns the options with which the module is created.

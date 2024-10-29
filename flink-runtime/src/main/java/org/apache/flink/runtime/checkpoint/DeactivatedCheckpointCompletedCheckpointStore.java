@@ -19,11 +19,12 @@
 package org.apache.flink.runtime.checkpoint;
 
 import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.runtime.state.SharedStateRegistry;
 
 import java.util.List;
 
 /**
- * This class represents a {@link CompletedCheckpointStore} if checkpointing has been enabled.
+ * This class represents a {@link CompletedCheckpointStore} if checkpointing has been disabled.
  * Consequently, no component should use methods other than {@link
  * CompletedCheckpointStore#shutdown}.
  */
@@ -31,7 +32,7 @@ public enum DeactivatedCheckpointCompletedCheckpointStore implements CompletedCh
     INSTANCE;
 
     @Override
-    public void addCheckpoint(
+    public CompletedCheckpoint addCheckpointAndSubsumeOldestOne(
             CompletedCheckpoint checkpoint,
             CheckpointsCleaner checkpointsCleaner,
             Runnable postCleanup)
@@ -44,7 +45,7 @@ public enum DeactivatedCheckpointCompletedCheckpointStore implements CompletedCh
             throws Exception {}
 
     @Override
-    public List<CompletedCheckpoint> getAllCheckpoints() throws Exception {
+    public List<CompletedCheckpoint> getAllCheckpoints() {
         throw unsupportedOperationException();
     }
 
@@ -60,6 +61,11 @@ public enum DeactivatedCheckpointCompletedCheckpointStore implements CompletedCh
 
     @Override
     public boolean requiresExternalizedCheckpoints() {
+        throw unsupportedOperationException();
+    }
+
+    @Override
+    public SharedStateRegistry getSharedStateRegistry() {
         throw unsupportedOperationException();
     }
 

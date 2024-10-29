@@ -20,6 +20,7 @@ package org.apache.flink.runtime.heartbeat;
 
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.rpc.exceptions.RecipientUnreachableException;
+import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
@@ -45,7 +46,7 @@ import java.util.function.Consumer;
  * @param <O> Type of the outgoing heartbeat payload
  */
 @ThreadSafe
-public class HeartbeatManagerImpl<I, O> implements HeartbeatManager<I, O> {
+class HeartbeatManagerImpl<I, O> implements HeartbeatManager<I, O> {
 
     /** Heartbeat timeout interval in milli seconds. */
     private final long heartbeatTimeoutIntervalMs;
@@ -85,7 +86,7 @@ public class HeartbeatManagerImpl<I, O> implements HeartbeatManager<I, O> {
                 heartbeatListener,
                 mainThreadExecutor,
                 log,
-                new HeartbeatMonitorImpl.Factory<>());
+                new DefaultHeartbeatMonitor.Factory<>());
     }
 
     public HeartbeatManagerImpl(
@@ -244,7 +245,8 @@ public class HeartbeatManagerImpl<I, O> implements HeartbeatManager<I, O> {
     protected BiConsumer<Void, Throwable> handleHeartbeatRpc(ResourceID heartbeatTarget) {
         return (unused, failure) -> {
             if (failure != null) {
-                handleHeartbeatRpcFailure(heartbeatTarget, failure);
+                handleHeartbeatRpcFailure(
+                        heartbeatTarget, ExceptionUtils.stripCompletionException(failure));
             } else {
                 handleHeartbeatRpcSuccess(heartbeatTarget);
             }

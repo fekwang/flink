@@ -22,9 +22,9 @@ import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.streaming.api.functions.source.datagen.DataGenerator;
+import org.apache.flink.util.function.SerializableFunction;
 
-import java.io.Serializable;
-import java.util.function.Function;
+import java.util.concurrent.ThreadLocalRandom;
 
 /** Utility for mapping the output of a {@link DataGenerator}. */
 @Internal
@@ -34,9 +34,13 @@ public class DataGeneratorMapper<A, B> implements DataGenerator<B> {
 
     private final SerializableFunction<A, B> mapper;
 
-    public DataGeneratorMapper(DataGenerator<A> generator, SerializableFunction<A, B> mapper) {
+    private final float nullRate;
+
+    public DataGeneratorMapper(
+            DataGenerator<A> generator, SerializableFunction<A, B> mapper, float nullRate) {
         this.generator = generator;
         this.mapper = mapper;
+        this.nullRate = nullRate;
     }
 
     @Override
@@ -53,9 +57,9 @@ public class DataGeneratorMapper<A, B> implements DataGenerator<B> {
 
     @Override
     public B next() {
-        return mapper.apply(generator.next());
+        if (nullRate == 0f || ThreadLocalRandom.current().nextFloat() > nullRate) {
+            return mapper.apply(generator.next());
+        }
+        return null;
     }
-
-    /** A simple serializable function. */
-    public interface SerializableFunction<A, B> extends Function<A, B>, Serializable {}
 }

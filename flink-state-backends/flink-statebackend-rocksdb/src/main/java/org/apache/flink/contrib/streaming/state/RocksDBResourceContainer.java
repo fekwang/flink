@@ -19,7 +19,11 @@
 package org.apache.flink.contrib.streaming.state;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.configuration.ConfigOption;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.runtime.memory.OpaqueMemoryResource;
+import org.apache.flink.util.FileUtils;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
@@ -30,7 +34,9 @@ import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.DBOptions;
 import org.rocksdb.Filter;
 import org.rocksdb.IndexType;
+import org.rocksdb.PlainTableConfig;
 import org.rocksdb.ReadOptions;
+import org.rocksdb.Statistics;
 import org.rocksdb.TableFormatConfig;
 import org.rocksdb.WriteOptions;
 import org.slf4j.Logger;
@@ -38,8 +44,14 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
-import java.lang.reflect.Field;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -52,6 +64,17 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public final class RocksDBResourceContainer implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(RocksDBResourceContainer.class);
+
+    private static final String ROCKSDB_RELOCATE_LOG_SUFFIX = "_LOG";
+
+    // the filename length limit is 255 on most operating systems
+    private static final int INSTANCE_PATH_LENGTH_LIMIT =
+            255 - ROCKSDB_RELOCATE_LOG_SUFFIX.length();
+
+    @Nullable private final File instanceRocksDBPath;
+
+    /** The configurations from file. */
+    private final ReadableConfig configuration;
 
     /** The pre-configured option settings. */
     private final PredefinedOptions predefinedOptions;
@@ -66,34 +89,62 @@ public final class RocksDBResourceContainer implements AutoCloseable {
      */
     @Nullable private final OpaqueMemoryResource<RocksDBSharedResources> sharedResources;
 
+    private final boolean enableStatistics;
+
     /** The handles to be closed when the container is closed. */
     private final ArrayList<AutoCloseable> handlesToClose;
 
+    @Nullable private Path relocatedDbLogBaseDir;
+
+    @VisibleForTesting
     public RocksDBResourceContainer() {
-        this(PredefinedOptions.DEFAULT, null, null);
+        this(new Configuration(), PredefinedOptions.DEFAULT, null, null, null, false);
     }
 
+    @VisibleForTesting
     public RocksDBResourceContainer(
             PredefinedOptions predefinedOptions, @Nullable RocksDBOptionsFactory optionsFactory) {
-        this(predefinedOptions, optionsFactory, null);
+        this(new Configuration(), predefinedOptions, optionsFactory, null, null, false);
     }
 
+    @VisibleForTesting
     public RocksDBResourceContainer(
             PredefinedOptions predefinedOptions,
             @Nullable RocksDBOptionsFactory optionsFactory,
             @Nullable OpaqueMemoryResource<RocksDBSharedResources> sharedResources) {
+        this(new Configuration(), predefinedOptions, optionsFactory, sharedResources, null, false);
+    }
 
+    public RocksDBResourceContainer(
+            ReadableConfig configuration,
+            PredefinedOptions predefinedOptions,
+            @Nullable RocksDBOptionsFactory optionsFactory,
+            @Nullable OpaqueMemoryResource<RocksDBSharedResources> sharedResources,
+            @Nullable File instanceBasePath,
+            boolean enableStatistics) {
+
+        this.configuration = configuration;
         this.predefinedOptions = checkNotNull(predefinedOptions);
         this.optionsFactory = optionsFactory;
         this.sharedResources = sharedResources;
+
+        this.instanceRocksDBPath =
+                instanceBasePath != null
+                        ? RocksDBKeyedStateBackendBuilder.getInstanceRocksDBPath(instanceBasePath)
+                        : null;
+
+        this.enableStatistics = enableStatistics;
         this.handlesToClose = new ArrayList<>();
     }
 
     /** Gets the RocksDB {@link DBOptions} to be used for RocksDB instances. */
     public DBOptions getDbOptions() {
-        // initial options from pre-defined profile
-        DBOptions opt = predefinedOptions.createDBOptions(handlesToClose);
+        // initial options from common profile
+        DBOptions opt = createBaseCommonDBOptions();
         handlesToClose.add(opt);
+
+        // load configurable options on top of pre-defined profile
+        setDBOptionsFromConfigurableOptions(opt);
 
         // add user-defined options factory, if specified
         if (optionsFactory != null) {
@@ -101,11 +152,17 @@ public final class RocksDBResourceContainer implements AutoCloseable {
         }
 
         // add necessary default options
-        opt = opt.setCreateIfMissing(true);
+        opt = opt.setCreateIfMissing(true).setAvoidFlushDuringShutdown(true);
 
         // if sharedResources is non-null, use the write buffer manager from it.
         if (sharedResources != null) {
             opt.setWriteBufferManager(sharedResources.getResourceHandle().getWriteBufferManager());
+        }
+
+        if (enableStatistics) {
+            Statistics statistics = new Statistics();
+            opt.setStatistics(statistics);
+            handlesToClose.add(statistics);
         }
 
         return opt;
@@ -125,11 +182,26 @@ public final class RocksDBResourceContainer implements AutoCloseable {
         return sharedResources.getResourceHandle().getWriteBufferManagerCapacity();
     }
 
+    /** Gets the "queryTimeAfterNumEntries" parameter from the configuration. */
+    public Long getQueryTimeAfterNumEntries() {
+        return internalGetOption(
+                RocksDBConfigurableOptions.COMPACT_FILTER_QUERY_TIME_AFTER_NUM_ENTRIES);
+    }
+
+    /** Gets the "getPeriodicCompactionTime" parameter from the configuration. */
+    public Duration getPeriodicCompactionTime() {
+        return internalGetOption(
+                RocksDBConfigurableOptions.COMPACT_FILTER_PERIODIC_COMPACTION_TIME);
+    }
+
     /** Gets the RocksDB {@link ColumnFamilyOptions} to be used for all RocksDB instances. */
     public ColumnFamilyOptions getColumnOptions() {
-        // initial options from pre-defined profile
-        ColumnFamilyOptions opt = predefinedOptions.createColumnOptions(handlesToClose);
+        // initial options from common profile
+        ColumnFamilyOptions opt = createBaseCommonColumnOptions();
         handlesToClose.add(opt);
+
+        // load configurable options on top of pre-defined profile
+        setColumnFamilyOptionsFromConfigurableOptions(opt, handlesToClose);
 
         // add user-defined options, if specified
         if (optionsFactory != null) {
@@ -218,6 +290,7 @@ public final class RocksDBResourceContainer implements AutoCloseable {
         if (sharedResources != null) {
             sharedResources.close();
         }
+        cleanRelocatedDbLogs();
     }
 
     /**
@@ -225,33 +298,213 @@ public final class RocksDBResourceContainer implements AutoCloseable {
      * worked in full bloom filter, not blocked based.
      */
     private boolean overwriteFilterIfExist(BlockBasedTableConfig blockBasedTableConfig) {
-        Filter filter = null;
-        try {
-            filter = getFilterFromBlockBasedTableConfig(blockBasedTableConfig);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            LOG.warn(
-                    "Reflection exception occurred when getting filter from BlockBasedTableConfig, disable partition index filters!");
-            return false;
-        }
-        if (filter != null) {
+        if (blockBasedTableConfig.filterPolicy() != null) {
             // TODO Can get filter's config in the future RocksDB version, and build new filter use
             // existing config.
             BloomFilter newFilter = new BloomFilter(10, false);
             LOG.info(
                     "Existing filter has been overwritten to full filters since partitioned index filters is enabled.");
-            blockBasedTableConfig.setFilter(newFilter);
+            blockBasedTableConfig.setFilterPolicy(newFilter);
             handlesToClose.add(newFilter);
         }
         return true;
     }
 
-    @VisibleForTesting
-    static Filter getFilterFromBlockBasedTableConfig(BlockBasedTableConfig blockBasedTableConfig)
-            throws NoSuchFieldException, IllegalAccessException {
-        Field filterField = blockBasedTableConfig.getClass().getDeclaredField("filterPolicy");
-        filterField.setAccessible(true);
-        Object filter = filterField.get(blockBasedTableConfig);
-        filterField.setAccessible(false);
-        return filter == null ? null : (Filter) filter;
+    /** Create a {@link DBOptions} for RocksDB, including some common settings. */
+    DBOptions createBaseCommonDBOptions() {
+        return new DBOptions().setUseFsync(false).setStatsDumpPeriodSec(0);
+    }
+
+    /** Create a {@link ColumnFamilyOptions} for RocksDB, including some common settings. */
+    ColumnFamilyOptions createBaseCommonColumnOptions() {
+        return new ColumnFamilyOptions();
+    }
+
+    /**
+     * Get a value for option from pre-defined option and configurable option settings. The priority
+     * relationship is as below.
+     *
+     * <p>Configured value > pre-defined value > default value.
+     *
+     * @param option the wanted option
+     * @param <T> the value type
+     * @return the final value for the option according to the priority above.
+     */
+    @Nullable
+    private <T> T internalGetOption(ConfigOption<T> option) {
+        return configuration
+                .getOptional(option)
+                .orElseGet(() -> predefinedOptions.getValue(option));
+    }
+
+    @SuppressWarnings("ConstantConditions")
+    private DBOptions setDBOptionsFromConfigurableOptions(DBOptions currentOptions) {
+
+        currentOptions.setMaxBackgroundJobs(
+                internalGetOption(RocksDBConfigurableOptions.MAX_BACKGROUND_THREADS));
+
+        currentOptions.setMaxOpenFiles(
+                internalGetOption(RocksDBConfigurableOptions.MAX_OPEN_FILES));
+
+        currentOptions.setInfoLogLevel(internalGetOption(RocksDBConfigurableOptions.LOG_LEVEL));
+
+        String logDir = internalGetOption(RocksDBConfigurableOptions.LOG_DIR);
+        if (logDir == null || logDir.isEmpty()) {
+            if (instanceRocksDBPath == null
+                    || instanceRocksDBPath.getAbsolutePath().length()
+                            <= INSTANCE_PATH_LENGTH_LIMIT) {
+                relocateDefaultDbLogDir(currentOptions);
+            } else {
+                // disable log relocate when instance path length exceeds limit to prevent rocksdb
+                // log file creation failure, details in FLINK-31743
+                LOG.warn(
+                        "RocksDB instance path length exceeds limit : {}, disable log relocate.",
+                        instanceRocksDBPath);
+            }
+        } else {
+            currentOptions.setDbLogDir(logDir);
+        }
+
+        currentOptions.setMaxLogFileSize(
+                internalGetOption(RocksDBConfigurableOptions.LOG_MAX_FILE_SIZE).getBytes());
+
+        currentOptions.setKeepLogFileNum(
+                internalGetOption(RocksDBConfigurableOptions.LOG_FILE_NUM));
+
+        return currentOptions;
+    }
+
+    @SuppressWarnings("ConstantConditions")
+    private ColumnFamilyOptions setColumnFamilyOptionsFromConfigurableOptions(
+            ColumnFamilyOptions currentOptions, Collection<AutoCloseable> handlesToClose) {
+
+        currentOptions.setCompactionStyle(
+                internalGetOption(RocksDBConfigurableOptions.COMPACTION_STYLE));
+
+        currentOptions.setCompressionPerLevel(
+                internalGetOption(RocksDBConfigurableOptions.COMPRESSION_PER_LEVEL));
+
+        currentOptions.setLevelCompactionDynamicLevelBytes(
+                internalGetOption(RocksDBConfigurableOptions.USE_DYNAMIC_LEVEL_SIZE));
+
+        currentOptions.setTargetFileSizeBase(
+                internalGetOption(RocksDBConfigurableOptions.TARGET_FILE_SIZE_BASE).getBytes());
+
+        currentOptions.setMaxBytesForLevelBase(
+                internalGetOption(RocksDBConfigurableOptions.MAX_SIZE_LEVEL_BASE).getBytes());
+
+        currentOptions.setWriteBufferSize(
+                internalGetOption(RocksDBConfigurableOptions.WRITE_BUFFER_SIZE).getBytes());
+
+        currentOptions.setMaxWriteBufferNumber(
+                internalGetOption(RocksDBConfigurableOptions.MAX_WRITE_BUFFER_NUMBER));
+
+        currentOptions.setMinWriteBufferNumberToMerge(
+                internalGetOption(RocksDBConfigurableOptions.MIN_WRITE_BUFFER_NUMBER_TO_MERGE));
+
+        TableFormatConfig tableFormatConfig = currentOptions.tableFormatConfig();
+
+        BlockBasedTableConfig blockBasedTableConfig;
+        if (tableFormatConfig == null) {
+            blockBasedTableConfig = new BlockBasedTableConfig();
+        } else {
+            if (tableFormatConfig instanceof PlainTableConfig) {
+                // if the table format config is PlainTableConfig, we just return current
+                // column-family options
+                return currentOptions;
+            } else {
+                blockBasedTableConfig = (BlockBasedTableConfig) tableFormatConfig;
+            }
+        }
+
+        blockBasedTableConfig.setBlockSize(
+                internalGetOption(RocksDBConfigurableOptions.BLOCK_SIZE).getBytes());
+
+        blockBasedTableConfig.setMetadataBlockSize(
+                internalGetOption(RocksDBConfigurableOptions.METADATA_BLOCK_SIZE).getBytes());
+
+        blockBasedTableConfig.setBlockCacheSize(
+                internalGetOption(RocksDBConfigurableOptions.BLOCK_CACHE_SIZE).getBytes());
+
+        if (internalGetOption(RocksDBConfigurableOptions.USE_BLOOM_FILTER)) {
+            final double bitsPerKey =
+                    internalGetOption(RocksDBConfigurableOptions.BLOOM_FILTER_BITS_PER_KEY);
+            final boolean blockBasedMode =
+                    internalGetOption(RocksDBConfigurableOptions.BLOOM_FILTER_BLOCK_BASED_MODE);
+            BloomFilter bloomFilter = new BloomFilter(bitsPerKey, blockBasedMode);
+            handlesToClose.add(bloomFilter);
+            blockBasedTableConfig.setFilterPolicy(bloomFilter);
+        }
+
+        return currentOptions.setTableFormatConfig(blockBasedTableConfig);
+    }
+
+    /**
+     * Relocates the default log directory of RocksDB with the Flink log directory. Finds the Flink
+     * log directory using log.file Java property that is set during startup.
+     *
+     * @param dbOptions The RocksDB {@link DBOptions}.
+     */
+    private void relocateDefaultDbLogDir(DBOptions dbOptions) {
+        String logFilePath = System.getProperty("log.file");
+        if (logFilePath != null) {
+            File logFile = resolveFileLocation(logFilePath);
+            if (logFile != null && resolveFileLocation(logFile.getParent()) != null) {
+                String relocatedDbLogDir = logFile.getParent();
+                this.relocatedDbLogBaseDir = new File(relocatedDbLogDir).toPath();
+                dbOptions.setDbLogDir(relocatedDbLogDir);
+            }
+        }
+    }
+
+    /**
+     * Verify log file location.
+     *
+     * @param logFilePath Path to log file
+     * @return File or null if not a valid log file
+     */
+    private File resolveFileLocation(String logFilePath) {
+        File logFile = new File(logFilePath);
+        return (logFile.exists() && logFile.canRead()) ? logFile : null;
+    }
+
+    /** Clean all relocated rocksdb logs. */
+    private void cleanRelocatedDbLogs() {
+        if (instanceRocksDBPath != null && relocatedDbLogBaseDir != null) {
+            LOG.info("Cleaning up relocated RocksDB logs: {}.", relocatedDbLogBaseDir);
+
+            String relocatedDbLogPrefix =
+                    resolveRelocatedDbLogPrefix(instanceRocksDBPath.getAbsolutePath());
+            try {
+                Arrays.stream(FileUtils.listDirectory(relocatedDbLogBaseDir))
+                        .filter(
+                                path ->
+                                        !Files.isDirectory(path)
+                                                && path.toFile()
+                                                        .getName()
+                                                        .startsWith(relocatedDbLogPrefix))
+                        .forEach(IOUtils::deleteFileQuietly);
+            } catch (IOException e) {
+                LOG.warn(
+                        "Could not list relocated RocksDB log directory: {}",
+                        relocatedDbLogBaseDir);
+            }
+        }
+    }
+
+    /**
+     * Resolve the prefix of rocksdb's log file name according to rocksdb's log file name rules. See
+     * https://github.com/ververica/frocksdb/blob/FRocksDB-6.20.3/file/filename.cc#L30.
+     *
+     * @param instanceRocksDBAbsolutePath The path where the rocksdb directory is located.
+     * @return Resolved rocksdb log name prefix.
+     */
+    private String resolveRelocatedDbLogPrefix(String instanceRocksDBAbsolutePath) {
+        if (!instanceRocksDBAbsolutePath.isEmpty()
+                && !instanceRocksDBAbsolutePath.matches("^[a-zA-Z0-9\\-._].*")) {
+            instanceRocksDBAbsolutePath = instanceRocksDBAbsolutePath.substring(1);
+        }
+        return instanceRocksDBAbsolutePath.replaceAll("[^a-zA-Z0-9\\-._]", "_")
+                + ROCKSDB_RELOCATE_LOG_SUFFIX;
     }
 }

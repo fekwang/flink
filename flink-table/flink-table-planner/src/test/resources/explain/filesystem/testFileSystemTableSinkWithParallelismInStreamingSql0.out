@@ -15,9 +15,9 @@ Sink(table=[default_catalog.default_database.test_sink_table], fields=[id, real_
 {
   "nodes" : [ {
     "id" : ,
-    "type" : "Source: TableSourceScan(table=[[default_catalog, default_database, test_source_table]], fields=[id, real_col, double_col, decimal_col])",
+    "type" : "Source: test_source_table[]",
     "pact" : "Data Source",
-    "contents" : "Source: TableSourceScan(table=[[default_catalog, default_database, test_source_table]], fields=[id, real_col, double_col, decimal_col])",
+    "contents" : "[]:TableSourceScan(table=[[default_catalog, default_database, test_source_table]], fields=[id, real_col, double_col, decimal_col])",
     "parallelism" : 1
   }, {
     "id" : ,
@@ -32,9 +32,9 @@ Sink(table=[default_catalog.default_database.test_sink_table], fields=[id, real_
     } ]
   }, {
     "id" : ,
-    "type" : "Sink: end",
-    "pact" : "Data Sink",
-    "contents" : "Sink: end",
+    "type" : "end: Writer",
+    "pact" : "Operator",
+    "contents" : "end: Writer",
     "parallelism" : 1,
     "predecessors" : [ {
       "id" : ,

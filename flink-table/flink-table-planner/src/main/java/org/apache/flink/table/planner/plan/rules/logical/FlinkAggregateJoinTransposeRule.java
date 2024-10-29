@@ -20,6 +20,8 @@ package org.apache.flink.table.planner.plan.rules.logical;
 import org.apache.flink.table.planner.plan.utils.AggregateUtil;
 import org.apache.flink.util.Preconditions;
 
+import org.apache.flink.shaded.guava32.com.google.common.collect.ImmutableList;
+
 import org.apache.calcite.linq4j.Ord;
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
@@ -283,7 +285,7 @@ public class FlinkAggregateJoinTransposeRule extends RelOptRule {
                 // metadata more robust" is fixed) places a heavy load on
                 // the metadata system.
                 //
-                // So we choose to imagine the the input is already unique, which is
+                // So we choose to imagine the input is already unique, which is
                 // untrue but harmless.
                 //
                 Util.discard(Bug.CALCITE_1048_FIXED);
@@ -370,7 +372,10 @@ public class FlinkAggregateJoinTransposeRule extends RelOptRule {
                         relBuilder
                                 .push(joinInput)
                                 .aggregate(
-                                        relBuilder.groupKey(belowAggregateKey, null), belowAggCalls)
+                                        relBuilder.groupKey(
+                                                belowAggregateKey,
+                                                ImmutableList.of(belowAggregateKey)),
+                                        belowAggCalls)
                                 .build();
             }
             offset += fieldCount;
@@ -483,7 +488,6 @@ public class FlinkAggregateJoinTransposeRule extends RelOptRule {
                     aggregate.copy(
                             aggregate.getTraitSet(),
                             aggregate.getInput(),
-                            aggregate.indicator,
                             newGroupSet,
                             com.google.common.collect.ImmutableList.of(newGroupSet),
                             aggCalls);

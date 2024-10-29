@@ -18,12 +18,14 @@
 
 package org.apache.flink.table.planner.plan.nodes.exec.batch;
 
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.TableException;
+import org.apache.flink.table.legacy.sinks.TableSink;
 import org.apache.flink.table.planner.plan.nodes.exec.ExecNode;
+import org.apache.flink.table.planner.plan.nodes.exec.ExecNodeContext;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty;
 import org.apache.flink.table.planner.plan.nodes.exec.common.CommonExecLegacySink;
 import org.apache.flink.table.runtime.types.ClassLogicalTypeConverter;
-import org.apache.flink.table.sinks.TableSink;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.RowType;
@@ -33,20 +35,23 @@ import javax.annotation.Nullable;
 import java.lang.reflect.Modifier;
 
 /**
- * Batch {@link ExecNode} to to write data into an external sink defined by a {@link TableSink}.
+ * Batch {@link ExecNode} to write data into an external sink defined by a {@link TableSink}.
  *
  * @param <T> The return type of the {@link TableSink}.
  */
-public class BatchExecLegacySink<T> extends CommonExecLegacySink<T>
-        implements BatchExecNode<Object> {
+public class BatchExecLegacySink<T> extends CommonExecLegacySink<T> implements BatchExecNode<T> {
 
     public BatchExecLegacySink(
+            ReadableConfig tableConfig,
             TableSink<T> tableSink,
             @Nullable String[] upsertKeys,
             InputProperty inputProperty,
             LogicalType outputType,
             String description) {
         super(
+                ExecNodeContext.newNodeId(),
+                ExecNodeContext.newContext(BatchExecLegacySink.class),
+                ExecNodeContext.newPersistedConfig(BatchExecLegacySink.class, tableConfig),
                 tableSink,
                 upsertKeys,
                 false, // needRetraction

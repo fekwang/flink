@@ -23,13 +23,14 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.core.fs.CloseableRegistry;
 import org.apache.flink.runtime.query.TaskKvStateRegistry;
 import org.apache.flink.runtime.state.AbstractKeyedStateBackendBuilder;
+import org.apache.flink.runtime.state.InternalKeyContextImpl;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.StateSnapshotTransformer;
 import org.apache.flink.runtime.state.StreamCompressionDecorator;
-import org.apache.flink.runtime.state.heap.InternalKeyContextImpl;
 import org.apache.flink.runtime.state.metrics.LatencyTrackingStateConfig;
 import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
+import org.apache.flink.runtime.state.ttl.mock.MockKeyedStateBackend.MockSnapshotSupplier;
 
 import javax.annotation.Nonnull;
 
@@ -43,6 +44,9 @@ import java.util.Map;
  * @param <K> The data type that the key serializer serializes.
  */
 public class MockKeyedStateBackendBuilder<K> extends AbstractKeyedStateBackendBuilder<K> {
+
+    private final MockSnapshotSupplier snapshotSupplier;
+
     public MockKeyedStateBackendBuilder(
             TaskKvStateRegistry kvStateRegistry,
             TypeSerializer<K> keySerializer,
@@ -54,7 +58,8 @@ public class MockKeyedStateBackendBuilder<K> extends AbstractKeyedStateBackendBu
             LatencyTrackingStateConfig latencyTrackingStateConfig,
             @Nonnull Collection<KeyedStateHandle> stateHandles,
             StreamCompressionDecorator keyGroupCompressionDecorator,
-            CloseableRegistry cancelStreamRegistry) {
+            CloseableRegistry cancelStreamRegistry,
+            MockSnapshotSupplier snapshotSupplier) {
         super(
                 kvStateRegistry,
                 keySerializer,
@@ -67,6 +72,7 @@ public class MockKeyedStateBackendBuilder<K> extends AbstractKeyedStateBackendBu
                 stateHandles,
                 keyGroupCompressionDecorator,
                 cancelStreamRegistry);
+        this.snapshotSupplier = snapshotSupplier;
     }
 
     @Override
@@ -86,6 +92,7 @@ public class MockKeyedStateBackendBuilder<K> extends AbstractKeyedStateBackendBu
                 stateValues,
                 stateSnapshotFilters,
                 cancelStreamRegistry,
-                new InternalKeyContextImpl<>(keyGroupRange, numberOfKeyGroups));
+                new InternalKeyContextImpl<>(keyGroupRange, numberOfKeyGroups),
+                snapshotSupplier);
     }
 }

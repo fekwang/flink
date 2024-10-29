@@ -33,7 +33,6 @@ import org.apache.flink.table.types.logical.LogicalTypeFamily;
 import org.apache.flink.table.types.logical.MapType;
 import org.apache.flink.table.types.logical.MultisetType;
 import org.apache.flink.table.types.logical.RowType;
-import org.apache.flink.table.types.logical.utils.LogicalTypeChecks;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ObjectMapper;
@@ -53,6 +52,7 @@ import static org.apache.flink.formats.common.TimeFormats.ISO8601_TIMESTAMP_WITH
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIMESTAMP_FORMAT;
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIMESTAMP_WITH_LOCAL_TIMEZONE_FORMAT;
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIME_FORMAT;
+import static org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN;
 
 /** Tool class used to convert from {@link RowData} to {@link JsonNode}. * */
 @Internal
@@ -69,13 +69,18 @@ public class RowDataToJsonConverters implements Serializable {
     /** The string literal when handling mode for map null key LITERAL. is */
     private final String mapNullKeyLiteral;
 
+    /** Flag indicating whether to ignore null fields. */
+    private final boolean ignoreNullFields;
+
     public RowDataToJsonConverters(
             TimestampFormat timestampFormat,
             JsonFormatOptions.MapNullKeyMode mapNullKeyMode,
-            String mapNullKeyLiteral) {
+            String mapNullKeyLiteral,
+            boolean ignoreNullFields) {
         this.timestampFormat = timestampFormat;
         this.mapNullKeyMode = mapNullKeyMode;
         this.mapNullKeyLiteral = mapNullKeyLiteral;
+        this.ignoreNullFields = ignoreNullFields;
     }
 
     /**
@@ -153,7 +158,11 @@ public class RowDataToJsonConverters implements Serializable {
     private RowDataToJsonConverter createDecimalConverter() {
         return (mapper, reuse, value) -> {
             BigDecimal bd = ((DecimalData) value).toBigDecimal();
-            return mapper.getNodeFactory().numberNode(bd);
+            return mapper.getNodeFactory()
+                    .numberNode(
+                            mapper.isEnabled(WRITE_BIGDECIMAL_AS_PLAIN)
+                                    ? bd
+                                    : bd.stripTrailingZeros());
         };
     }
 
@@ -249,7 +258,7 @@ public class RowDataToJsonConverters implements Serializable {
 
     private RowDataToJsonConverter createMapConverter(
             String typeSummary, LogicalType keyType, LogicalType valueType) {
-        if (!LogicalTypeChecks.hasFamily(keyType, LogicalTypeFamily.CHARACTER_STRING)) {
+        if (!keyType.is(LogicalTypeFamily.CHARACTER_STRING)) {
             throw new UnsupportedOperationException(
                     "JSON format doesn't support non-string as key type of map. "
                             + "The type is: "
@@ -332,9 +341,11 @@ public class RowDataToJsonConverters implements Serializable {
                 String fieldName = fieldNames[i];
                 try {
                     Object field = fieldGetters[i].getFieldOrNull(row);
-                    node.set(
-                            fieldName,
-                            fieldConverters[i].convert(mapper, node.get(fieldName), field));
+                    if (field != null || !ignoreNullFields) {
+                        node.set(
+                                fieldName,
+                                fieldConverters[i].convert(mapper, node.get(fieldName), field));
+                    }
                 } catch (Throwable t) {
                     throw new RuntimeException(
                             String.format("Fail to serialize at field: %s.", fieldName), t);

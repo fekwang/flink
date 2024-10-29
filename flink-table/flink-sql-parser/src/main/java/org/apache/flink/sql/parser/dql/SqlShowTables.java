@@ -18,25 +18,40 @@
 
 package org.apache.flink.sql.parser.dql;
 
-import org.apache.calcite.sql.SqlCall;
+import org.apache.calcite.sql.SqlCharStringLiteral;
+import org.apache.calcite.sql.SqlIdentifier;
 import org.apache.calcite.sql.SqlKind;
-import org.apache.calcite.sql.SqlNode;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.SqlSpecialOperator;
-import org.apache.calcite.sql.SqlWriter;
 import org.apache.calcite.sql.parser.SqlParserPos;
 
-import java.util.Collections;
-import java.util.List;
-
-/** SHOW Tables sql call. */
-public class SqlShowTables extends SqlCall {
+/**
+ * SHOW TABLES sql call. The full syntax for show functions is as followings:
+ *
+ * <pre>{@code
+ * SHOW TABLES [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] LIKE
+ * <sql_like_pattern> ] statement
+ * }</pre>
+ */
+public class SqlShowTables extends SqlShowCall {
 
     public static final SqlSpecialOperator OPERATOR =
             new SqlSpecialOperator("SHOW TABLES", SqlKind.OTHER);
 
-    public SqlShowTables(SqlParserPos pos) {
-        super(pos);
+    public SqlShowTables(
+            SqlParserPos pos,
+            String preposition,
+            SqlIdentifier databaseName,
+            boolean notLike,
+            SqlCharStringLiteral likeLiteral) {
+        // only LIKE currently supported for SHOW TABLES
+        super(
+                pos,
+                preposition,
+                databaseName,
+                likeLiteral == null ? null : "LIKE",
+                likeLiteral,
+                notLike);
     }
 
     @Override
@@ -45,12 +60,7 @@ public class SqlShowTables extends SqlCall {
     }
 
     @Override
-    public List<SqlNode> getOperandList() {
-        return Collections.emptyList();
-    }
-
-    @Override
-    public void unparse(SqlWriter writer, int leftPrec, int rightPrec) {
-        writer.keyword("SHOW TABLES");
+    String getOperationName() {
+        return "SHOW TABLES";
     }
 }

@@ -15,10 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.nodes.calcite
 
-import org.apache.flink.table.catalog.{CatalogTable, ObjectIdentifier, ResolvedCatalogTable}
+import org.apache.flink.table.catalog.ContextResolvedTable
 import org.apache.flink.table.connector.sink.DynamicTableSink
 import org.apache.flink.table.planner.plan.abilities.sink.SinkAbilitySpec
 
@@ -31,21 +30,20 @@ import java.util
 import scala.collection.JavaConversions._
 
 /**
-  * Sub-class of [[Sink]] that is a relational expression
-  * which writes out data of input node into a [[DynamicTableSink]].
-  * This class corresponds to Calcite logical rel.
-  */
+ * Sub-class of [[Sink]] that is a relational expression which writes out data of input node into a
+ * [[DynamicTableSink]]. This class corresponds to Calcite logical rel.
+ */
 final class LogicalSink(
     cluster: RelOptCluster,
     traitSet: RelTraitSet,
     input: RelNode,
     hints: util.List[RelHint],
-    tableIdentifier: ObjectIdentifier,
-    catalogTable: ResolvedCatalogTable,
+    contextResolvedTable: ContextResolvedTable,
     tableSink: DynamicTableSink,
+    targetColumns: Array[Array[Int]],
     val staticPartitions: Map[String, String],
     val abilitySpecs: Array[SinkAbilitySpec])
-  extends Sink(cluster, traitSet, input, hints, tableIdentifier, catalogTable, tableSink) {
+  extends Sink(cluster, traitSet, input, hints, targetColumns, contextResolvedTable, tableSink) {
 
   override def copy(traitSet: RelTraitSet, inputs: util.List[RelNode]): RelNode = {
     new LogicalSink(
@@ -53,9 +51,9 @@ final class LogicalSink(
       traitSet,
       inputs.head,
       hints,
-      tableIdentifier,
-      catalogTable,
+      contextResolvedTable,
       tableSink,
+      targetColumns,
       staticPartitions,
       abilitySpecs)
   }
@@ -66,10 +64,10 @@ object LogicalSink {
   def create(
       input: RelNode,
       hints: util.List[RelHint],
-      tableIdentifier: ObjectIdentifier,
-      catalogTable: ResolvedCatalogTable,
+      contextResolvedTable: ContextResolvedTable,
       tableSink: DynamicTableSink,
       staticPartitions: util.Map[String, String],
+      targetColumns: Array[Array[Int]],
       abilitySpecs: Array[SinkAbilitySpec]): LogicalSink = {
     val traits = input.getCluster.traitSetOf(Convention.NONE)
     new LogicalSink(
@@ -77,14 +75,10 @@ object LogicalSink {
       traits,
       input,
       hints,
-      tableIdentifier,
-      catalogTable,
+      contextResolvedTable,
       tableSink,
+      targetColumns,
       staticPartitions.toMap,
       abilitySpecs)
   }
 }
-
-
-
-

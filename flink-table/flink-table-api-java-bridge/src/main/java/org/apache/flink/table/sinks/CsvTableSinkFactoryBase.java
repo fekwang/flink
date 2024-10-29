@@ -19,16 +19,15 @@
 package org.apache.flink.table.sinks;
 
 import org.apache.flink.annotation.Internal;
-import org.apache.flink.connector.file.sink.FileSink;
 import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.legacy.table.descriptors.SchemaValidator;
 import org.apache.flink.table.api.TableException;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.descriptors.DescriptorProperties;
 import org.apache.flink.table.descriptors.FileSystemValidator;
 import org.apache.flink.table.descriptors.OldCsvValidator;
-import org.apache.flink.table.descriptors.SchemaValidator;
-import org.apache.flink.table.factories.TableFactory;
 import org.apache.flink.table.factories.TableFactoryService;
+import org.apache.flink.table.legacy.api.TableSchema;
+import org.apache.flink.table.legacy.factories.TableFactory;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.utils.TableSchemaUtils;
 
@@ -52,13 +51,13 @@ import static org.apache.flink.table.descriptors.OldCsvValidator.FORMAT_FIELD_DE
 import static org.apache.flink.table.descriptors.OldCsvValidator.FORMAT_NUM_FILES;
 import static org.apache.flink.table.descriptors.OldCsvValidator.FORMAT_TYPE_VALUE;
 import static org.apache.flink.table.descriptors.OldCsvValidator.FORMAT_WRITE_MODE;
-import static org.apache.flink.table.descriptors.Schema.SCHEMA;
+import static org.apache.flink.table.legacy.descriptors.Schema.SCHEMA;
 import static org.apache.flink.table.sources.CsvTableSourceFactoryBase.getFieldLogicalTypes;
 
 /**
  * Factory base for creating configured instances of {@link CsvTableSink}.
  *
- * @deprecated The legacy CSV connector has been replaced by {@link FileSink}. It is kept only to
+ * @deprecated The legacy CSV connector has been replaced by {@code FileSink}. It is kept only to
  *     support tests for the legacy connector stack.
  */
 @Internal

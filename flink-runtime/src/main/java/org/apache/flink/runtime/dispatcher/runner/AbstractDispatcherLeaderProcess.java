@@ -24,10 +24,12 @@ import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
 import org.apache.flink.runtime.dispatcher.DispatcherGateway;
 import org.apache.flink.runtime.dispatcher.DispatcherId;
-import org.apache.flink.runtime.jobgraph.JobGraph;
-import org.apache.flink.runtime.jobmanager.JobGraphWriter;
+import org.apache.flink.runtime.highavailability.JobResultStore;
+import org.apache.flink.runtime.jobmanager.ExecutionPlanWriter;
+import org.apache.flink.runtime.jobmaster.JobResult;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
 import org.apache.flink.util.AutoCloseableAsync;
 import org.apache.flink.util.FlinkException;
 import org.apache.flink.util.Preconditions;
@@ -176,16 +178,14 @@ public abstract class AbstractDispatcherLeaderProcess implements DispatcherLeade
         createdDispatcherService
                 .getTerminationFuture()
                 .whenComplete(
-                        (ignored, throwable) -> {
-                            runIfStateIs(
-                                    State.RUNNING,
-                                    () -> {
-                                        handleError(
-                                                new FlinkException(
-                                                        "Unexpected termination of DispatcherService.",
-                                                        throwable));
-                                    });
-                        });
+                        (ignored, throwable) ->
+                                runIfStateIs(
+                                        State.RUNNING,
+                                        () ->
+                                                handleError(
+                                                        new FlinkException(
+                                                                "Unexpected termination of DispatcherService.",
+                                                                throwable))));
     }
 
     final <V> Optional<V> supplyUnsynchronizedIfRunning(Supplier<V> supplier) {
@@ -257,16 +257,18 @@ public abstract class AbstractDispatcherLeaderProcess implements DispatcherLeade
     /** Factory for {@link DispatcherGatewayService}. */
     public interface DispatcherGatewayServiceFactory {
         DispatcherGatewayService create(
-                DispatcherId fencingToken,
-                Collection<JobGraph> recoveredJobs,
-                JobGraphWriter jobGraphWriter);
+                DispatcherId dispatcherId,
+                Collection<ExecutionPlan> recoveredJobs,
+                Collection<JobResult> recoveredDirtyJobResults,
+                ExecutionPlanWriter executionPlanWriter,
+                JobResultStore jobResultStore);
     }
 
     /** An accessor of the {@link DispatcherGateway}. */
     public interface DispatcherGatewayService extends AutoCloseableAsync {
         DispatcherGateway getGateway();
 
-        CompletableFuture<Void> onRemovedJobGraph(JobID jobId);
+        CompletableFuture<Void> onRemovedExecutionPlan(JobID jobId);
 
         CompletableFuture<ApplicationStatus> getShutDownFuture();
 

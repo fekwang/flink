@@ -21,21 +21,21 @@ package org.apache.flink.table.planner.catalog;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Catalog;
 import org.apache.flink.table.catalog.CatalogManager;
-import org.apache.flink.table.catalog.CatalogManager.TableLookupResult;
+import org.apache.flink.table.catalog.ContextResolvedTable;
 import org.apache.flink.table.catalog.ObjectIdentifier;
 import org.apache.flink.table.catalog.ObjectPath;
 import org.apache.flink.table.catalog.ResolvedCatalogBaseTable;
-import org.apache.flink.table.catalog.ResolvedSchema;
-import org.apache.flink.table.catalog.UniqueConstraint;
 import org.apache.flink.table.catalog.exceptions.TableNotExistException;
 import org.apache.flink.table.catalog.stats.CatalogColumnStatistics;
 import org.apache.flink.table.catalog.stats.CatalogTableStatistics;
 import org.apache.flink.table.plan.stats.TableStats;
+import org.apache.flink.table.planner.calcite.TimestampSchemaVersion;
 import org.apache.flink.table.planner.plan.stats.FlinkStatistic;
 
 import org.apache.calcite.linq4j.tree.Expression;
 import org.apache.calcite.schema.Schema;
 import org.apache.calcite.schema.SchemaPlus;
+import org.apache.calcite.schema.SchemaVersion;
 import org.apache.calcite.schema.Schemas;
 import org.apache.calcite.schema.Table;
 
@@ -72,27 +72,39 @@ class DatabaseCalciteSchema extends FlinkSchema {
     public Table getTable(String tableName) {
         final ObjectIdentifier identifier =
                 ObjectIdentifier.of(catalogName, databaseName, tableName);
-        return catalogManager
-                .getTable(identifier)
-                .map(
+        Optional<ContextResolvedTable> table;
+        if (getSchemaVersion().isPresent()) {
+            SchemaVersion schemaVersion = getSchemaVersion().get();
+            if (schemaVersion instanceof TimestampSchemaVersion) {
+                TimestampSchemaVersion timestampSchemaVersion =
+                        (TimestampSchemaVersion) getSchemaVersion().get();
+                table = catalogManager.getTable(identifier, timestampSchemaVersion.getTimestamp());
+            } else {
+                throw new UnsupportedOperationException(
+                        String.format(
+                                "Unsupported schema version type: %s", schemaVersion.getClass()));
+            }
+        } else {
+            table = catalogManager.getTable(identifier);
+        }
+        return table.map(
                         lookupResult ->
                                 new CatalogSchemaTable(
-                                        identifier,
-                                        lookupResult,
+                                        lookupResult.toCatalogTable(),
                                         getStatistic(lookupResult, identifier),
                                         isStreamingMode))
                 .orElse(null);
     }
 
     private FlinkStatistic getStatistic(
-            TableLookupResult lookupResult, ObjectIdentifier identifier) {
-        final ResolvedCatalogBaseTable<?> resolvedBaseTable = lookupResult.getResolvedTable();
+            ContextResolvedTable contextResolvedTable, ObjectIdentifier identifier) {
+        final ResolvedCatalogBaseTable<?> resolvedBaseTable =
+                contextResolvedTable.getResolvedTable();
         switch (resolvedBaseTable.getTableKind()) {
             case TABLE:
-                return FlinkStatistic.builder()
-                        .tableStats(extractTableStats(lookupResult, identifier))
-                        // this is a temporary solution, FLINK-15123 will resolve this
-                        .uniqueKeys(extractUniqueKeys(resolvedBaseTable.getResolvedSchema()))
+            case MATERIALIZED_TABLE:
+                return FlinkStatistic.unknown(resolvedBaseTable.getResolvedSchema())
+                        .tableStats(extractTableStats(contextResolvedTable, identifier))
                         .build();
             case VIEW:
             default:
@@ -101,7 +113,7 @@ class DatabaseCalciteSchema extends FlinkSchema {
     }
 
     private TableStats extractTableStats(
-            TableLookupResult lookupResult, ObjectIdentifier identifier) {
+            ContextResolvedTable lookupResult, ObjectIdentifier identifier) {
         if (lookupResult.isTemporary()) {
             return TableStats.UNKNOWN;
         }
@@ -120,18 +132,6 @@ class DatabaseCalciteSchema extends FlinkSchema {
                             tablePath.getDatabaseName(),
                             tablePath.getObjectName()),
                     e);
-        }
-    }
-
-    private static Set<Set<String>> extractUniqueKeys(ResolvedSchema schema) {
-        Optional<UniqueConstraint> primaryKeyConstraint = schema.getPrimaryKey();
-        if (primaryKeyConstraint.isPresent()) {
-            Set<String> primaryKey = new HashSet<>(primaryKeyConstraint.get().getColumns());
-            Set<Set<String>> uniqueKeys = new HashSet<>();
-            uniqueKeys.add(primaryKey);
-            return uniqueKeys;
-        } else {
-            return null;
         }
     }
 
@@ -158,5 +158,11 @@ class DatabaseCalciteSchema extends FlinkSchema {
     @Override
     public boolean isMutable() {
         return true;
+    }
+
+    @Override
+    public DatabaseCalciteSchema copy() {
+        return new DatabaseCalciteSchema(
+                catalogName, databaseName, catalogManager, isStreamingMode);
     }
 }

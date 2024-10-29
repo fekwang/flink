@@ -25,7 +25,8 @@ import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.UserDefinedFunctionHelper;
-import org.apache.flink.table.planner.functions.aggfunctions.MinWithRetractAggFunction.MinWithRetractAccumulator;
+import org.apache.flink.table.runtime.functions.aggregate.MinWithRetractAggFunction;
+import org.apache.flink.table.runtime.functions.aggregate.MinWithRetractAggFunction.MinWithRetractAccumulator;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.BooleanType;
 import org.apache.flink.table.types.logical.DateType;
@@ -40,16 +41,14 @@ import org.apache.flink.table.types.logical.TimestampType;
 import org.apache.flink.table.types.logical.TinyIntType;
 import org.apache.flink.table.types.logical.VarCharType;
 
-import org.junit.experimental.runners.Enclosed;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Nested;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 
 /** Test case for built-in Min with retraction aggregate function. */
-@RunWith(Enclosed.class)
-public final class MinWithRetractAggFunctionTest {
+final class MinWithRetractAggFunctionTest {
 
     // --------------------------------------------------------------------------------------------
     // Test sets for a particular type being aggregated
@@ -59,7 +58,8 @@ public final class MinWithRetractAggFunctionTest {
     // --------------------------------------------------------------------------------------------
 
     /** Test for {@link TinyIntType}. */
-    public static final class ByteMinWithRetractAggFunctionTest
+    @Nested
+    final class ByteMinWithRetractAggFunctionTest
             extends NumberMinWithRetractAggFunctionTestBase<Byte> {
 
         @Override
@@ -84,7 +84,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link SmallIntType}. */
-    public static final class ShortMinWithRetractAggFunctionTest
+    @Nested
+    final class ShortMinWithRetractAggFunctionTest
             extends NumberMinWithRetractAggFunctionTestBase<Short> {
 
         @Override
@@ -109,7 +110,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link IntType}. */
-    public static final class IntMinWithRetractAggFunctionTest
+    @Nested
+    final class IntMinWithRetractAggFunctionTest
             extends NumberMinWithRetractAggFunctionTestBase<Integer> {
 
         @Override
@@ -134,7 +136,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link BigIntType}. */
-    public static final class LongMinWithRetractAggFunctionTest
+    @Nested
+    final class LongMinWithRetractAggFunctionTest
             extends NumberMinWithRetractAggFunctionTestBase<Long> {
 
         @Override
@@ -159,7 +162,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link FloatType}. */
-    public static final class FloatMinWithRetractAggFunctionTest
+    @Nested
+    final class FloatMinWithRetractAggFunctionTest
             extends NumberMinWithRetractAggFunctionTestBase<Float> {
 
         @Override
@@ -184,7 +188,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link DoubleType}. */
-    public static final class DoubleMinWithRetractAggFunctionTest
+    @Nested
+    final class DoubleMinWithRetractAggFunctionTest
             extends NumberMinWithRetractAggFunctionTestBase<Double> {
 
         @Override
@@ -209,7 +214,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link BooleanType}. */
-    public static final class BooleanMinWithRetractAggFunctionTest
+    @Nested
+    final class BooleanMinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<Boolean> {
 
         @Override
@@ -234,7 +240,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link DecimalType}. */
-    public static final class DecimalMinWithRetractAggFunctionTest
+    @Nested
+    final class DecimalMinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<DecimalData> {
 
         private int precision = 20;
@@ -274,7 +281,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link VarCharType}. */
-    public static final class StringMinWithRetractAggFunctionTest
+    @Nested
+    final class StringMinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<StringData> {
 
         @Override
@@ -310,7 +318,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link TimestampType}. */
-    public static final class TimestampMinWithRetractAggFunctionTest
+    @Nested
+    final class TimestampMinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<TimestampData> {
 
         @Override
@@ -340,7 +349,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link TimestampType} with precision 9. */
-    public static final class Timestamp9MinWithRetractAggFunctionTest
+    @Nested
+    final class Timestamp9MinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<TimestampData> {
 
         @Override
@@ -374,7 +384,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link LocalZonedTimestampType}. */
-    public static final class LocalTimestampMinWithRetractAggFunctionTest
+    @Nested
+    final class LocalTimestampMinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<TimestampData> {
 
         @Override
@@ -404,7 +415,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link LocalZonedTimestampType} with precision 9. */
-    public static final class LocalTimestamp9MinWithRetractAggFunctionTest
+    @Nested
+    final class LocalTimestamp9MinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<TimestampData> {
 
         @Override
@@ -438,7 +450,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link DateType}. */
-    public static final class DateMinWithRetractAggFunctionTest
+    @Nested
+    final class DateMinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<Integer> {
 
         @Override
@@ -461,7 +474,8 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test for {@link TimeType}. */
-    public static final class TimeMinWithRetractAggFunctionTest
+    @Nested
+    final class TimeMinWithRetractAggFunctionTest
             extends MinWithRetractAggFunctionTestBase<Integer> {
 
         @Override
@@ -492,8 +506,8 @@ public final class MinWithRetractAggFunctionTest {
     // --------------------------------------------------------------------------------------------
 
     /** Test base for {@link MinWithRetractAggFunction}. */
-    public abstract static class MinWithRetractAggFunctionTestBase<T>
-            extends AggFunctionTestBase<T, MinWithRetractAccumulator<T>> {
+    abstract static class MinWithRetractAggFunctionTestBase<T>
+            extends AggFunctionTestBase<T, T, MinWithRetractAccumulator<T>> {
 
         @Override
         protected Class<?> getAccClass() {
@@ -522,7 +536,7 @@ public final class MinWithRetractAggFunctionTest {
     }
 
     /** Test base for {@link MinWithRetractAggFunction} and numeric types. */
-    public abstract static class NumberMinWithRetractAggFunctionTestBase<T>
+    abstract static class NumberMinWithRetractAggFunctionTestBase<T>
             extends MinWithRetractAggFunctionTestBase<T> {
         protected abstract T getMinValue();
 

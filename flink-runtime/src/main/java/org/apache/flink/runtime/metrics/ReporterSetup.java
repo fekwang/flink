@@ -25,13 +25,15 @@ import org.apache.flink.configuration.DelegatingConfiguration;
 import org.apache.flink.configuration.MetricOptions;
 import org.apache.flink.core.plugin.PluginManager;
 import org.apache.flink.metrics.MetricConfig;
-import org.apache.flink.metrics.reporter.InstantiateViaFactory;
-import org.apache.flink.metrics.reporter.InterceptInstantiationViaReflection;
 import org.apache.flink.metrics.reporter.MetricReporter;
 import org.apache.flink.metrics.reporter.MetricReporterFactory;
+import org.apache.flink.runtime.metrics.filter.DefaultMetricFilter;
+import org.apache.flink.runtime.metrics.filter.MetricFilter;
 import org.apache.flink.runtime.metrics.scope.ScopeFormat;
+import org.apache.flink.traces.reporter.TraceReporterFactory;
+import org.apache.flink.util.CollectionUtil;
 
-import org.apache.flink.shaded.guava30.com.google.common.collect.Iterators;
+import org.apache.flink.shaded.guava32.com.google.common.collect.Iterators;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,11 +43,11 @@ import javax.annotation.Nullable;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
@@ -64,11 +66,12 @@ public final class ReporterSetup {
     private static final Logger LOG = LoggerFactory.getLogger(ReporterSetup.class);
 
     // regex pattern to split the defined reporters
-    private static final Pattern reporterListPattern = Pattern.compile("\\s*,\\s*");
+    private static final Pattern metricReporterListPattern = Pattern.compile("\\s*,\\s*");
 
     // regex pattern to extract the name from reporter configuration keys, e.g. "rep" from
     // "metrics.reporter.rep.class"
-    private static final Pattern reporterClassPattern =
+    @SuppressWarnings("deprecation")
+    private static final Pattern metricReporterClassPattern =
             Pattern.compile(
                     Pattern.quote(ConfigConstants.METRICS_REPORTER_PREFIX)
                             +
@@ -76,35 +79,41 @@ public final class ReporterSetup {
                             // classes
                             "([\\S&&[^.]]*)\\."
                             + '('
-                            + Pattern.quote(ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX)
-                            + '|'
-                            + Pattern.quote(ConfigConstants.METRICS_REPORTER_FACTORY_CLASS_SUFFIX)
+                            + Pattern.quote(MetricOptions.REPORTER_FACTORY_CLASS.key())
                             + ')');
 
     private final String name;
     private final MetricConfig configuration;
     private final MetricReporter reporter;
+    private final MetricFilter filter;
+    private final Map<String, String> additionalVariables;
 
     public ReporterSetup(
-            final String name, final MetricConfig configuration, MetricReporter reporter) {
+            final String name,
+            final MetricConfig configuration,
+            MetricReporter reporter,
+            final MetricFilter filter,
+            final Map<String, String> additionalVariables) {
         this.name = name;
         this.configuration = configuration;
         this.reporter = reporter;
+        this.filter = filter;
+        this.additionalVariables = additionalVariables;
     }
 
     public Optional<String> getDelimiter() {
         return Optional.ofNullable(
-                configuration.getString(ConfigConstants.METRICS_REPORTER_SCOPE_DELIMITER, null));
+                configuration.getString(MetricOptions.REPORTER_SCOPE_DELIMITER.key(), null));
     }
 
     public Optional<String> getIntervalSettings() {
         return Optional.ofNullable(
-                configuration.getString(ConfigConstants.METRICS_REPORTER_INTERVAL_SUFFIX, null));
+                configuration.getString(MetricOptions.REPORTER_INTERVAL.key(), null));
     }
 
     public Set<String> getExcludedVariables() {
         String excludedVariablesList =
-                configuration.getString(ConfigConstants.METRICS_REPORTER_EXCLUDED_VARIABLES, null);
+                configuration.getString(MetricOptions.REPORTER_EXCLUDED_VARIABLES.key(), null);
         if (excludedVariablesList == null) {
             return Collections.emptySet();
         } else {
@@ -114,6 +123,14 @@ public final class ReporterSetup {
             }
             return Collections.unmodifiableSet(excludedVariables);
         }
+    }
+
+    public MetricFilter getFilter() {
+        return filter;
+    }
+
+    public Map<String, String> getAdditionalVariables() {
+        return additionalVariables;
     }
 
     public String getName() {
@@ -131,35 +148,63 @@ public final class ReporterSetup {
 
     @VisibleForTesting
     public static ReporterSetup forReporter(String reporterName, MetricReporter reporter) {
-        return createReporterSetup(reporterName, new MetricConfig(), reporter);
+        return createReporterSetup(
+                reporterName,
+                new MetricConfig(),
+                reporter,
+                MetricFilter.NO_OP_FILTER,
+                Collections.emptyMap());
     }
 
     @VisibleForTesting
     public static ReporterSetup forReporter(
             String reporterName, MetricConfig metricConfig, MetricReporter reporter) {
-        return createReporterSetup(reporterName, metricConfig, reporter);
+        return createReporterSetup(
+                reporterName,
+                metricConfig,
+                reporter,
+                MetricFilter.NO_OP_FILTER,
+                Collections.emptyMap());
+    }
+
+    @VisibleForTesting
+    public static ReporterSetup forReporter(
+            String reporterName, MetricFilter metricFilter, MetricReporter reporter) {
+        return createReporterSetup(
+                reporterName, new MetricConfig(), reporter, metricFilter, Collections.emptyMap());
     }
 
     private static ReporterSetup createReporterSetup(
-            String reporterName, MetricConfig metricConfig, MetricReporter reporter) {
+            String reporterName,
+            MetricConfig metricConfig,
+            MetricReporter reporter,
+            MetricFilter metricFilter,
+            Map<String, String> additionalVariables) {
         reporter.open(metricConfig);
 
-        return new ReporterSetup(reporterName, metricConfig, reporter);
+        return new ReporterSetup(
+                reporterName, metricConfig, reporter, metricFilter, additionalVariables);
     }
 
     public static List<ReporterSetup> fromConfiguration(
             final Configuration configuration, @Nullable final PluginManager pluginManager) {
-        String includedReportersString = configuration.getString(MetricOptions.REPORTERS_LIST, "");
+        String includedReportersString = configuration.get(MetricOptions.REPORTERS_LIST, "");
 
         Set<String> namedReporters =
-                findEnabledReportersInConfiguration(configuration, includedReportersString);
+                findEnabledTraceReportersInConfiguration(
+                        configuration,
+                        includedReportersString,
+                        metricReporterListPattern,
+                        metricReporterClassPattern,
+                        ConfigConstants.METRICS_REPORTER_PREFIX);
 
         if (namedReporters.isEmpty()) {
             return Collections.emptyList();
         }
 
         final List<Tuple2<String, Configuration>> reporterConfigurations =
-                loadReporterConfigurations(configuration, namedReporters);
+                loadReporterConfigurations(
+                        configuration, namedReporters, ConfigConstants.METRICS_REPORTER_PREFIX);
 
         final Map<String, MetricReporterFactory> reporterFactories =
                 loadAvailableReporterFactories(pluginManager);
@@ -167,8 +212,12 @@ public final class ReporterSetup {
         return setupReporters(reporterFactories, reporterConfigurations);
     }
 
-    private static Set<String> findEnabledReportersInConfiguration(
-            Configuration configuration, String includedReportersString) {
+    public static Set<String> findEnabledTraceReportersInConfiguration(
+            Configuration configuration,
+            String includedReportersString,
+            Pattern reporterListPattern,
+            Pattern reporterClassPattern,
+            String reporterPrefix) {
         Set<String> includedReporters =
                 reporterListPattern
                         .splitAsStream(includedReportersString)
@@ -179,24 +228,26 @@ public final class ReporterSetup {
         // use a TreeSet to make the reporter order deterministic, which is useful for testing
         Set<String> namedOrderedReporters = new TreeSet<>(String::compareTo);
 
-        // scan entire configuration for keys starting with METRICS_REPORTER_PREFIX and determine
+        // scan entire configuration for keys starting with reporterPrefix and determine
         // the set of enabled reporters
         for (String key : configuration.keySet()) {
-            if (key.startsWith(ConfigConstants.METRICS_REPORTER_PREFIX)) {
+            if (key.startsWith(reporterPrefix)) {
                 Matcher matcher = reporterClassPattern.matcher(key);
                 if (matcher.matches()) {
                     String reporterName = matcher.group(1);
                     if (includedReporters.isEmpty() || includedReporters.contains(reporterName)) {
                         if (namedOrderedReporters.contains(reporterName)) {
                             LOG.warn(
-                                    "Duplicate class configuration detected for reporter {}.",
+                                    "Duplicate class configuration detected for {}{}.",
+                                    reporterPrefix.replace('.', ' '),
                                     reporterName);
                         } else {
                             namedOrderedReporters.add(reporterName);
                         }
                     } else {
                         LOG.info(
-                                "Excluding reporter {}, not configured in reporter list ({}).",
+                                "Excluding {}{}, not configured in reporter list ({}).",
+                                reporterPrefix.replace('.', ' '),
                                 reporterName,
                                 includedReportersString);
                     }
@@ -206,16 +257,15 @@ public final class ReporterSetup {
         return namedOrderedReporters;
     }
 
-    private static List<Tuple2<String, Configuration>> loadReporterConfigurations(
-            Configuration configuration, Set<String> namedReporters) {
+    public static List<Tuple2<String, Configuration>> loadReporterConfigurations(
+            Configuration configuration, Set<String> namedReporters, String reporterPrefix) {
         final List<Tuple2<String, Configuration>> reporterConfigurations =
                 new ArrayList<>(namedReporters.size());
 
         for (String namedReporter : namedReporters) {
             DelegatingConfiguration delegatingConfiguration =
                     new DelegatingConfiguration(
-                            configuration,
-                            ConfigConstants.METRICS_REPORTER_PREFIX + namedReporter + '.');
+                            configuration, reporterPrefix + namedReporter + '.');
 
             reporterConfigurations.add(Tuple2.of(namedReporter, delegatingConfiguration));
         }
@@ -224,7 +274,8 @@ public final class ReporterSetup {
 
     private static Map<String, MetricReporterFactory> loadAvailableReporterFactories(
             @Nullable PluginManager pluginManager) {
-        final Map<String, MetricReporterFactory> reporterFactories = new HashMap<>(2);
+        final Map<String, MetricReporterFactory> reporterFactories =
+                CollectionUtil.newHashMapWithExpectedSize(2);
         final Iterator<MetricReporterFactory> factoryIterator =
                 getAllReporterFactories(pluginManager);
         // do not use streams or for-each loops here because they do not allow catching individual
@@ -239,7 +290,8 @@ public final class ReporterSetup {
                 if (existingFactory == null) {
                     reporterFactories.put(factoryClassName, factory);
                     LOG.debug(
-                            "Found reporter factory {} at {} ",
+                            "Found {} {} at {} ",
+                            MetricReporterFactory.class.getSimpleName(),
                             factoryClassName,
                             new File(
                                             factory.getClass()
@@ -250,11 +302,12 @@ public final class ReporterSetup {
                                     .getCanonicalPath());
                 } else {
                     LOG.warn(
-                            "Multiple implementations of the same reporter were found in 'lib' and/or 'plugins' directories for {}. It is recommended to remove redundant reporter JARs to resolve used versions' ambiguity.",
+                            "Multiple implementations of the same {} were found in 'lib' and/or 'plugins' directories for {}. It is recommended to remove redundant reporter JARs to resolve used versions' ambiguity.",
+                            MetricReporter.class.getSimpleName(),
                             factoryClassName);
                 }
             } catch (Exception | ServiceConfigurationError e) {
-                LOG.warn("Error while loading reporter factory.", e);
+                LOG.warn("Error while loading {}.", TraceReporterFactory.class.getSimpleName(), e);
             }
         }
 
@@ -284,16 +337,35 @@ public final class ReporterSetup {
             try {
                 Optional<MetricReporter> metricReporterOptional =
                         loadReporter(reporterName, reporterConfig, reporterFactories);
+
+                final MetricFilter metricFilter =
+                        DefaultMetricFilter.fromConfiguration(reporterConfig);
+
+                // massage user variables keys into scope format for parity to variable exclusion
+                Map<String, String> additionalVariables =
+                        reporterConfig.get(MetricOptions.REPORTER_ADDITIONAL_VARIABLES).entrySet()
+                                .stream()
+                                .collect(
+                                        Collectors.toMap(
+                                                e -> ScopeFormat.asVariable(e.getKey()),
+                                                Entry::getValue));
+
                 metricReporterOptional.ifPresent(
                         reporter -> {
                             MetricConfig metricConfig = new MetricConfig();
                             reporterConfig.addAllToProperties(metricConfig);
                             reporterSetups.add(
-                                    createReporterSetup(reporterName, metricConfig, reporter));
+                                    createReporterSetup(
+                                            reporterName,
+                                            metricConfig,
+                                            reporter,
+                                            metricFilter,
+                                            additionalVariables));
                         });
             } catch (Throwable t) {
                 LOG.error(
-                        "Could not instantiate metrics reporter {}. Metrics might not be exposed/reported.",
+                        "Could not instantiate {} {}. Metrics might not be exposed/reported.",
+                        MetricReporter.class.getSimpleName(),
                         reporterName,
                         t);
             }
@@ -301,50 +373,21 @@ public final class ReporterSetup {
         return reporterSetups;
     }
 
+    @SuppressWarnings("deprecation")
     private static Optional<MetricReporter> loadReporter(
             final String reporterName,
             final Configuration reporterConfig,
-            final Map<String, MetricReporterFactory> reporterFactories)
-            throws ClassNotFoundException, IllegalAccessException, InstantiationException {
+            final Map<String, MetricReporterFactory> reporterFactories) {
 
-        final String reporterClassName =
-                reporterConfig.getString(ConfigConstants.METRICS_REPORTER_CLASS_SUFFIX, null);
-        final String factoryClassName =
-                reporterConfig.getString(
-                        ConfigConstants.METRICS_REPORTER_FACTORY_CLASS_SUFFIX, null);
+        final String factoryClassName = reporterConfig.get(MetricOptions.REPORTER_FACTORY_CLASS);
 
         if (factoryClassName != null) {
             return loadViaFactory(
                     factoryClassName, reporterName, reporterConfig, reporterFactories);
         }
 
-        if (reporterClassName != null) {
-            final Optional<MetricReporterFactory> interceptingFactory =
-                    reporterFactories.values().stream()
-                            .filter(
-                                    factory -> {
-                                        InterceptInstantiationViaReflection annotation =
-                                                factory.getClass()
-                                                        .getAnnotation(
-                                                                InterceptInstantiationViaReflection
-                                                                        .class);
-                                        return annotation != null
-                                                && annotation
-                                                        .reporterClassName()
-                                                        .equals(reporterClassName);
-                                    })
-                            .findAny();
-
-            if (interceptingFactory.isPresent()) {
-                return loadViaFactory(reporterConfig, interceptingFactory.get());
-            }
-
-            return loadViaReflection(
-                    reporterClassName, reporterName, reporterConfig, reporterFactories);
-        }
-
         LOG.warn(
-                "No reporter class nor factory set for reporter {}. Metrics might not be exposed/reported.",
+                "No reporter factory set for reporter {}. Metrics might not be exposed/reported.",
                 reporterName);
         return Optional.empty();
     }
@@ -376,35 +419,5 @@ public final class ReporterSetup {
         reporterConfig.addAllToProperties(metricConfig);
 
         return Optional.of(factory.createMetricReporter(metricConfig));
-    }
-
-    private static Optional<MetricReporter> loadViaReflection(
-            final String reporterClassName,
-            final String reporterName,
-            final Configuration reporterConfig,
-            final Map<String, MetricReporterFactory> reporterFactories)
-            throws ClassNotFoundException, IllegalAccessException, InstantiationException {
-
-        final Class<?> reporterClass = Class.forName(reporterClassName);
-
-        final InstantiateViaFactory alternativeFactoryAnnotation =
-                reporterClass.getAnnotation(InstantiateViaFactory.class);
-        if (alternativeFactoryAnnotation != null) {
-            final String alternativeFactoryClassName =
-                    alternativeFactoryAnnotation.factoryClassName();
-            LOG.info(
-                    "The reporter configuration of {} is out-dated (but still supported)."
-                            + " Please configure a factory class instead: '{}{}.{}: {}' to ensure that the configuration"
-                            + " continues to work with future versions.",
-                    reporterName,
-                    ConfigConstants.METRICS_REPORTER_PREFIX,
-                    reporterName,
-                    ConfigConstants.METRICS_REPORTER_FACTORY_CLASS_SUFFIX,
-                    alternativeFactoryClassName);
-            return loadViaFactory(
-                    alternativeFactoryClassName, reporterName, reporterConfig, reporterFactories);
-        }
-
-        return Optional.of((MetricReporter) reporterClass.newInstance());
     }
 }

@@ -21,16 +21,14 @@ package org.apache.flink.table.runtime.operators.python.aggregate.arrow;
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.fnexecution.v1.FlinkFnApi;
+import org.apache.flink.python.util.ProtoUtils;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
-import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.table.data.binary.BinaryRowData;
 import org.apache.flink.table.data.utils.JoinedRowData;
 import org.apache.flink.table.functions.AggregateFunction;
 import org.apache.flink.table.functions.python.PythonEnv;
 import org.apache.flink.table.functions.python.PythonFunctionInfo;
-import org.apache.flink.table.planner.codegen.CodeGeneratorContext;
-import org.apache.flink.table.planner.codegen.ProjectionCodeGenerator;
 import org.apache.flink.table.runtime.arrow.serializers.ArrowSerializer;
 import org.apache.flink.table.runtime.generated.GeneratedProjection;
 import org.apache.flink.table.runtime.generated.Projection;
@@ -39,8 +37,9 @@ import org.apache.flink.table.runtime.operators.python.utils.StreamRecordRowData
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.util.Preconditions;
 
-import static org.apache.flink.streaming.api.utils.ProtoUtils.createArrowTypeCoderInfoDescriptorProto;
-import static org.apache.flink.streaming.api.utils.ProtoUtils.getUserDefinedFunctionProto;
+import static org.apache.flink.python.PythonOptions.PYTHON_METRIC_ENABLED;
+import static org.apache.flink.python.PythonOptions.PYTHON_PROFILE_ENABLED;
+import static org.apache.flink.python.util.ProtoUtils.createArrowTypeCoderInfoDescriptorProto;
 
 /** The Abstract class of Arrow Aggregate Operator for Pandas {@link AggregateFunction}. */
 @Internal
@@ -55,7 +54,7 @@ public abstract class AbstractArrowPythonAggregateFunctionOperator
     /** The Pandas {@link AggregateFunction}s to be executed. */
     protected final PythonFunctionInfo[] pandasAggFunctions;
 
-    protected final int[] groupingSet;
+    private final GeneratedProjection udafInputGeneratedProjection;
 
     protected transient ArrowSerializer arrowSerializer;
 
@@ -75,23 +74,26 @@ public abstract class AbstractArrowPythonAggregateFunctionOperator
             Configuration config,
             PythonFunctionInfo[] pandasAggFunctions,
             RowType inputType,
-            RowType outputType,
-            int[] groupingSet,
-            int[] udafInputOffsets) {
-        super(config, inputType, outputType, udafInputOffsets);
+            RowType udfInputType,
+            RowType udfOutputType,
+            GeneratedProjection udafInputGeneratedProjection) {
+        super(config, inputType, udfInputType, udfOutputType);
         this.pandasAggFunctions = Preconditions.checkNotNull(pandasAggFunctions);
-        this.groupingSet = Preconditions.checkNotNull(groupingSet);
+        this.udafInputGeneratedProjection =
+                Preconditions.checkNotNull(udafInputGeneratedProjection);
     }
 
+    @SuppressWarnings("unchecked")
     @Override
     public void open() throws Exception {
         super.open();
         rowDataWrapper = new StreamRecordRowDataWrappingCollector(output);
         reuseJoinedRow = new JoinedRowData();
 
-        udafInputProjection = createUdafInputProjection();
-        arrowSerializer =
-                new ArrowSerializer(userDefinedFunctionInputType, userDefinedFunctionOutputType);
+        udafInputProjection =
+                udafInputGeneratedProjection.newInstance(
+                        Thread.currentThread().getContextClassLoader());
+        arrowSerializer = new ArrowSerializer(udfInputType, udfOutputType);
         arrowSerializer.open(bais, baos);
         currentBatchCount = 0;
     }
@@ -146,27 +148,11 @@ public abstract class AbstractArrowPythonAggregateFunctionOperator
     }
 
     @Override
-    public FlinkFnApi.UserDefinedFunctions getUserDefinedFunctionsProto() {
-        FlinkFnApi.UserDefinedFunctions.Builder builder =
-                FlinkFnApi.UserDefinedFunctions.newBuilder();
-        // add udaf proto
-        for (PythonFunctionInfo pythonFunctionInfo : pandasAggFunctions) {
-            builder.addUdfs(getUserDefinedFunctionProto(pythonFunctionInfo));
-        }
-        builder.setMetricEnabled(pythonConfig.isMetricEnabled());
-        builder.setProfileEnabled(pythonConfig.isProfileEnabled());
-        return builder.build();
-    }
-
-    private Projection<RowData, BinaryRowData> createUdafInputProjection() {
-        final GeneratedProjection generatedProjection =
-                ProjectionCodeGenerator.generateProjection(
-                        CodeGeneratorContext.apply(new TableConfig()),
-                        "UadfInputProjection",
-                        inputType,
-                        userDefinedFunctionInputType,
-                        userDefinedFunctionInputOffsets);
-        // noinspection unchecked
-        return generatedProjection.newInstance(Thread.currentThread().getContextClassLoader());
+    public FlinkFnApi.UserDefinedFunctions createUserDefinedFunctionsProto() {
+        return ProtoUtils.createUserDefinedFunctionsProto(
+                getRuntimeContext(),
+                pandasAggFunctions,
+                config.get(PYTHON_METRIC_ENABLED),
+                config.get(PYTHON_PROFILE_ENABLED));
     }
 }

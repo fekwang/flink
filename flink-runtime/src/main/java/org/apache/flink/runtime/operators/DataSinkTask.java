@@ -22,6 +22,7 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.functions.RuntimeContext;
 import org.apache.flink.api.common.io.CleanupWhenUnsuccessful;
 import org.apache.flink.api.common.io.OutputFormat;
+import org.apache.flink.api.common.io.OutputFormat.InitializationContext;
 import org.apache.flink.api.common.io.RichOutputFormat;
 import org.apache.flink.api.common.typeutils.TypeComparatorFactory;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
@@ -53,9 +54,6 @@ import org.apache.flink.util.MutableObjectIterator;
 import org.apache.commons.lang3.tuple.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
 
 /**
  * DataSinkTask which is executed by a task manager. The task hands the data to an output format.
@@ -90,8 +88,6 @@ public class DataSinkTask<IT> extends AbstractInvokable {
     private volatile boolean taskCanceled;
 
     private volatile boolean cleanupCalled;
-
-    private final CompletableFuture<Void> terminationFuture = new CompletableFuture<>();
 
     /**
      * Create an Invokable task and set its environment.
@@ -220,8 +216,22 @@ public class DataSinkTask<IT> extends AbstractInvokable {
 
             // open
             format.open(
-                    this.getEnvironment().getTaskInfo().getIndexOfThisSubtask(),
-                    this.getEnvironment().getTaskInfo().getNumberOfParallelSubtasks());
+                    new InitializationContext() {
+                        @Override
+                        public int getNumTasks() {
+                            return getEnvironment().getTaskInfo().getNumberOfParallelSubtasks();
+                        }
+
+                        @Override
+                        public int getTaskNumber() {
+                            return getEnvironment().getTaskInfo().getIndexOfThisSubtask();
+                        }
+
+                        @Override
+                        public int getAttemptNumber() {
+                            return getEnvironment().getTaskInfo().getAttemptNumber();
+                        }
+                    });
 
             if (objectReuseEnabled) {
                 IT record = serializer.createInstance();
@@ -294,7 +304,6 @@ public class DataSinkTask<IT> extends AbstractInvokable {
             }
 
             BatchTask.clearReaders(new MutableReader<?>[] {inputReader});
-            terminationFuture.complete(null);
         }
 
         if (!this.taskCanceled) {
@@ -305,7 +314,7 @@ public class DataSinkTask<IT> extends AbstractInvokable {
     }
 
     @Override
-    public Future<Void> cancel() throws Exception {
+    public void cancel() throws Exception {
         this.taskCanceled = true;
         OutputFormat<IT> format = this.format;
         if (format != null) {
@@ -326,7 +335,6 @@ public class DataSinkTask<IT> extends AbstractInvokable {
         }
 
         LOG.debug(getLogString("Cancelling data sink operator"));
-        return terminationFuture;
     }
 
     /**
@@ -444,6 +452,7 @@ public class DataSinkTask<IT> extends AbstractInvokable {
         Environment env = getEnvironment();
 
         return new DistributedRuntimeUDFContext(
+                env.getJobInfo(),
                 env.getTaskInfo(),
                 env.getUserCodeClassLoader(),
                 getExecutionConfig(),
@@ -452,7 +461,6 @@ public class DataSinkTask<IT> extends AbstractInvokable {
                 getEnvironment()
                         .getMetricGroup()
                         .getOrAddOperator(getEnvironment().getTaskInfo().getTaskName()),
-                env.getExternalResourceInfoProvider(),
-                env.getJobID());
+                env.getExternalResourceInfoProvider());
     }
 }

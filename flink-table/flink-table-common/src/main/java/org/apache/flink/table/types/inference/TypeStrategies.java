@@ -20,6 +20,7 @@ package org.apache.flink.table.types.inference;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.inference.strategies.ArgumentMappingTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.CommonTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.ExplicitTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.FirstTypeStrategy;
@@ -28,7 +29,6 @@ import org.apache.flink.table.types.inference.strategies.MappingTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.MatchFamilyTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.MissingTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.NullableIfArgsTypeStrategy;
-import org.apache.flink.table.types.inference.strategies.UseArgumentTypeStrategy;
 import org.apache.flink.table.types.inference.strategies.VaryingStringTypeStrategy;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeFamily;
@@ -55,6 +55,11 @@ public final class TypeStrategies {
     /** Type strategy that returns a common, least restrictive type of all arguments. */
     public static final TypeStrategy COMMON = new CommonTypeStrategy();
 
+    /** Type strategy that returns a common, least restrictive type of selected arguments. */
+    public static TypeStrategy commonRange(ArgumentCount argumentRange) {
+        return new CommonTypeStrategy(argumentRange);
+    }
+
     /** Type strategy that returns a fixed {@link DataType}. */
     public static TypeStrategy explicit(DataType dataType) {
         return new ExplicitTypeStrategy(dataType);
@@ -62,7 +67,12 @@ public final class TypeStrategies {
 
     /** Type strategy that returns the n-th input argument. */
     public static TypeStrategy argument(int pos) {
-        return new UseArgumentTypeStrategy(pos);
+        return new ArgumentMappingTypeStrategy(pos, Optional::of);
+    }
+
+    /** Type strategy that returns the n-th input argument, mapping it. */
+    public static TypeStrategy argument(int pos, Function<DataType, Optional<DataType>> mapper) {
+        return new ArgumentMappingTypeStrategy(pos, mapper);
     }
 
     /** Type strategy that returns the first type that could be inferred. */
@@ -94,7 +104,7 @@ public final class TypeStrategies {
      */
     public static TypeStrategy nullableIfArgs(
             ConstantArgumentCount includedArgs, TypeStrategy initialStrategy) {
-        return new NullableIfArgsTypeStrategy(includedArgs, initialStrategy);
+        return new NullableIfArgsTypeStrategy(includedArgs, initialStrategy, false);
     }
 
     /**
@@ -103,6 +113,23 @@ public final class TypeStrategies {
      */
     public static TypeStrategy nullableIfArgs(TypeStrategy initialStrategy) {
         return nullableIfArgs(ConstantArgumentCount.any(), initialStrategy);
+    }
+
+    /**
+     * A type strategy that can be used to make a result type nullable if all the selected input
+     * arguments are nullable. Otherwise the type will be non-nullable.
+     */
+    public static TypeStrategy nullableIfAllArgs(
+            ConstantArgumentCount includedArgs, TypeStrategy initialStrategy) {
+        return new NullableIfArgsTypeStrategy(includedArgs, initialStrategy, true);
+    }
+
+    /**
+     * A type strategy that can be used to make a result type nullable if all the input arguments is
+     * nullable. Otherwise the type will be not null.
+     */
+    public static TypeStrategy nullableIfAllArgs(TypeStrategy initialStrategy) {
+        return nullableIfAllArgs(ConstantArgumentCount.any(), initialStrategy);
     }
 
     /**

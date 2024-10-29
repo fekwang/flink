@@ -16,9 +16,9 @@
 # limitations under the License.
 ################################################################################
 from apache_beam.coders.coder_impl import create_InputStream, create_OutputStream
-from apache_beam.runners.worker.data_plane import PeriodicThread
 
 from pyflink.fn_execution.stream_slow import InputStream
+from pyflink.fn_execution.utils.operation_utils import PeriodicThread
 
 
 class BeamInputStream(InputStream):
@@ -47,9 +47,6 @@ class BeamTimeBasedOutputStream(create_OutputStream):
 
     def write(self, b: bytes):
         self._output_stream.write(b)
-        if self._flush_event:
-            self._output_stream.flush()
-            self._flush_event = False
 
     def reset_output_stream(self, output_stream: create_OutputStream):
         self._output_stream = output_stream
@@ -61,3 +58,10 @@ class BeamTimeBasedOutputStream(create_OutputStream):
         if self._periodic_flusher:
             self._periodic_flusher.cancel()
             self._periodic_flusher = None
+
+    def maybe_flush(self):
+        if self._flush_event:
+            self._output_stream.flush()
+            self._flush_event = False
+        else:
+            self._output_stream.maybe_flush()

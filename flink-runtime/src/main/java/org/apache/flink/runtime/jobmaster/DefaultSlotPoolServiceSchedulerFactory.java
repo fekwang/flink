@@ -20,21 +20,25 @@ package org.apache.flink.runtime.jobmaster;
 
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
-import org.apache.flink.configuration.AkkaOptions;
-import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.JobManagerOptions;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.configuration.SchedulerExecutionMode;
+import org.apache.flink.configuration.StateRecoveryOptions;
+import org.apache.flink.core.failure.FailureEnricher;
 import org.apache.flink.runtime.blob.BlobWriter;
+import org.apache.flink.runtime.blocklist.BlocklistOperations;
 import org.apache.flink.runtime.checkpoint.CheckpointRecoveryFactory;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.executiongraph.JobStatusListener;
 import org.apache.flink.runtime.io.network.partition.JobMasterPartitionTracker;
-import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.jobgraph.JobType;
 import org.apache.flink.runtime.jobmaster.slotpool.DeclarativeSlotPoolBridgeServiceFactory;
+import org.apache.flink.runtime.jobmaster.slotpool.DeclarativeSlotPoolFactory;
 import org.apache.flink.runtime.jobmaster.slotpool.DeclarativeSlotPoolServiceFactory;
+import org.apache.flink.runtime.jobmaster.slotpool.PreferredAllocationRequestSlotMatchingStrategy;
+import org.apache.flink.runtime.jobmaster.slotpool.RequestSlotMatchingStrategy;
+import org.apache.flink.runtime.jobmaster.slotpool.SimpleRequestSlotMatchingStrategy;
 import org.apache.flink.runtime.jobmaster.slotpool.SlotPoolService;
 import org.apache.flink.runtime.jobmaster.slotpool.SlotPoolServiceFactory;
 import org.apache.flink.runtime.metrics.groups.JobManagerJobMetricGroup;
@@ -43,14 +47,23 @@ import org.apache.flink.runtime.scheduler.DefaultSchedulerFactory;
 import org.apache.flink.runtime.scheduler.SchedulerNG;
 import org.apache.flink.runtime.scheduler.SchedulerNGFactory;
 import org.apache.flink.runtime.scheduler.adaptive.AdaptiveSchedulerFactory;
+import org.apache.flink.runtime.scheduler.adaptivebatch.AdaptiveBatchSchedulerFactory;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
+import org.apache.flink.util.Preconditions;
 import org.apache.flink.util.clock.SystemClock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import javax.annotation.Nonnull;
+
 import java.time.Duration;
+import java.util.Collection;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
+
+import static org.apache.flink.configuration.JobManagerOptions.SLOT_REQUEST_MAX_INTERVAL;
 
 /** Default {@link SlotPoolServiceSchedulerFactory} implementation. */
 public final class DefaultSlotPoolServiceSchedulerFactory
@@ -75,8 +88,12 @@ public final class DefaultSlotPoolServiceSchedulerFactory
     }
 
     @Override
-    public SlotPoolService createSlotPoolService(JobID jid) {
-        return slotPoolServiceFactory.createSlotPoolService(jid);
+    public SlotPoolService createSlotPoolService(
+            JobID jid,
+            DeclarativeSlotPoolFactory declarativeSlotPoolFactory,
+            @Nonnull ComponentMainThreadExecutor componentMainThreadExecutor) {
+        return slotPoolServiceFactory.createSlotPoolService(
+                jid, declarativeSlotPoolFactory, componentMainThreadExecutor);
     }
 
     @Override
@@ -87,32 +104,34 @@ public final class DefaultSlotPoolServiceSchedulerFactory
     @Override
     public SchedulerNG createScheduler(
             Logger log,
-            JobGraph jobGraph,
-            ScheduledExecutorService scheduledExecutorService,
+            ExecutionPlan executionPlan,
+            Executor ioExecutor,
             Configuration configuration,
             SlotPoolService slotPoolService,
-            ScheduledExecutorService executorService,
+            ScheduledExecutorService futureExecutor,
             ClassLoader userCodeLoader,
             CheckpointRecoveryFactory checkpointRecoveryFactory,
-            Time rpcTimeout,
+            Duration rpcTimeout,
             BlobWriter blobWriter,
             JobManagerJobMetricGroup jobManagerJobMetricGroup,
-            Time slotRequestTimeout,
+            Duration slotRequestTimeout,
             ShuffleMaster<?> shuffleMaster,
             JobMasterPartitionTracker partitionTracker,
             ExecutionDeploymentTracker executionDeploymentTracker,
             long initializationTimestamp,
             ComponentMainThreadExecutor mainThreadExecutor,
             FatalErrorHandler fatalErrorHandler,
-            JobStatusListener jobStatusListener)
+            JobStatusListener jobStatusListener,
+            Collection<FailureEnricher> failureEnrichers,
+            BlocklistOperations blocklistOperations)
             throws Exception {
         return schedulerNGFactory.createInstance(
                 log,
-                jobGraph,
-                scheduledExecutorService,
+                executionPlan,
+                ioExecutor,
                 configuration,
                 slotPoolService,
-                executorService,
+                futureExecutor,
                 userCodeLoader,
                 checkpointRecoveryFactory,
                 rpcTimeout,
@@ -125,7 +144,9 @@ public final class DefaultSlotPoolServiceSchedulerFactory
                 initializationTimestamp,
                 mainThreadExecutor,
                 fatalErrorHandler,
-                jobStatusListener);
+                jobStatusListener,
+                failureEnrichers,
+                blocklistOperations);
     }
 
     public static DefaultSlotPoolServiceSchedulerFactory create(
@@ -135,42 +156,66 @@ public final class DefaultSlotPoolServiceSchedulerFactory
     }
 
     public static DefaultSlotPoolServiceSchedulerFactory fromConfiguration(
-            Configuration configuration, JobType jobType) {
+            Configuration configuration, JobType jobType, boolean isDynamicGraph) {
 
-        final Time rpcTimeout =
-                Time.fromDuration(configuration.get(AkkaOptions.ASK_TIMEOUT_DURATION));
-        final Time slotIdleTimeout =
-                Time.milliseconds(configuration.getLong(JobManagerOptions.SLOT_IDLE_TIMEOUT));
-        final Time batchSlotTimeout =
-                Time.milliseconds(configuration.getLong(JobManagerOptions.SLOT_REQUEST_TIMEOUT));
+        final Duration rpcTimeout = configuration.get(RpcOptions.ASK_TIMEOUT_DURATION);
+        final Duration slotIdleTimeout = configuration.get(JobManagerOptions.SLOT_IDLE_TIMEOUT);
+        final Duration batchSlotTimeout = configuration.get(JobManagerOptions.SLOT_REQUEST_TIMEOUT);
 
         final SlotPoolServiceFactory slotPoolServiceFactory;
         final SchedulerNGFactory schedulerNGFactory;
 
         JobManagerOptions.SchedulerType schedulerType =
-                ClusterOptions.getSchedulerType(configuration);
-        if (schedulerType == JobManagerOptions.SchedulerType.Adaptive && jobType == JobType.BATCH) {
-            LOG.info(
-                    "Adaptive Scheduler configured, but Batch job detected. Changing scheduler type to NG / DefaultScheduler.");
-            // overwrite
-            schedulerType = JobManagerOptions.SchedulerType.Ng;
+                getSchedulerType(configuration, jobType, isDynamicGraph);
+
+        final Duration slotRequestMaxInterval = configuration.get(SLOT_REQUEST_MAX_INTERVAL);
+
+        // TODO: It will be assigned by the corresponding logic after
+        //  https://issues.apache.org/jira/browse/FLINK-35966
+        final boolean slotBatchAllocatable = false;
+
+        if (configuration
+                .getOptional(JobManagerOptions.HYBRID_PARTITION_DATA_CONSUME_CONSTRAINT)
+                .isPresent()) {
+            Preconditions.checkState(
+                    schedulerType == JobManagerOptions.SchedulerType.AdaptiveBatch,
+                    "Only adaptive batch scheduler supports setting "
+                            + JobManagerOptions.HYBRID_PARTITION_DATA_CONSUME_CONSTRAINT.key());
         }
 
         switch (schedulerType) {
-            case Ng:
+            case Default:
                 schedulerNGFactory = new DefaultSchedulerFactory();
                 slotPoolServiceFactory =
                         new DeclarativeSlotPoolBridgeServiceFactory(
                                 SystemClock.getInstance(),
                                 rpcTimeout,
                                 slotIdleTimeout,
-                                batchSlotTimeout);
+                                batchSlotTimeout,
+                                slotRequestMaxInterval,
+                                slotBatchAllocatable,
+                                getRequestSlotMatchingStrategy(configuration, jobType));
                 break;
             case Adaptive:
-                schedulerNGFactory = getAdaptiveSchedulerFactoryFromConfiguration(configuration);
+                schedulerNGFactory = new AdaptiveSchedulerFactory();
                 slotPoolServiceFactory =
                         new DeclarativeSlotPoolServiceFactory(
-                                SystemClock.getInstance(), slotIdleTimeout, rpcTimeout);
+                                SystemClock.getInstance(),
+                                slotIdleTimeout,
+                                rpcTimeout,
+                                slotRequestMaxInterval);
+                break;
+            case AdaptiveBatch:
+                schedulerNGFactory = new AdaptiveBatchSchedulerFactory();
+                slotPoolServiceFactory =
+                        new DeclarativeSlotPoolBridgeServiceFactory(
+                                SystemClock.getInstance(),
+                                rpcTimeout,
+                                slotIdleTimeout,
+                                batchSlotTimeout,
+                                slotRequestMaxInterval,
+                                slotBatchAllocatable,
+                                getRequestSlotMatchingStrategy(configuration, jobType));
                 break;
             default:
                 throw new IllegalArgumentException(
@@ -183,29 +228,64 @@ public final class DefaultSlotPoolServiceSchedulerFactory
                 slotPoolServiceFactory, schedulerNGFactory);
     }
 
-    private static AdaptiveSchedulerFactory getAdaptiveSchedulerFactoryFromConfiguration(
-            Configuration configuration) {
-        Duration allocationTimeoutDefault = JobManagerOptions.RESOURCE_WAIT_TIMEOUT.defaultValue();
-        Duration stabilizationTimeoutDefault =
-                JobManagerOptions.RESOURCE_STABILIZATION_TIMEOUT.defaultValue();
-
-        if (configuration.get(JobManagerOptions.SCHEDULER_MODE)
-                == SchedulerExecutionMode.REACTIVE) {
-            allocationTimeoutDefault = Duration.ofMillis(-1);
-            stabilizationTimeoutDefault = Duration.ZERO;
+    private static JobManagerOptions.SchedulerType getSchedulerType(
+            Configuration configuration, JobType jobType, boolean isDynamicGraph) {
+        JobManagerOptions.SchedulerType schedulerType;
+        if (jobType == JobType.BATCH) {
+            if (configuration.get(JobManagerOptions.SCHEDULER_MODE)
+                            == SchedulerExecutionMode.REACTIVE
+                    || configuration.get(JobManagerOptions.SCHEDULER)
+                            == JobManagerOptions.SchedulerType.Adaptive) {
+                LOG.info(
+                        "Adaptive Scheduler configured, but Batch job detected. Changing scheduler type to 'AdaptiveBatch'.");
+                // overwrite
+                schedulerType = JobManagerOptions.SchedulerType.AdaptiveBatch;
+            } else {
+                schedulerType =
+                        configuration
+                                .getOptional(JobManagerOptions.SCHEDULER)
+                                .orElse(
+                                        isDynamicGraph
+                                                ? JobManagerOptions.SchedulerType.AdaptiveBatch
+                                                : JobManagerOptions.SchedulerType.Default);
+            }
+        } else {
+            if (configuration.get(JobManagerOptions.SCHEDULER_MODE)
+                    == SchedulerExecutionMode.REACTIVE) {
+                schedulerType = JobManagerOptions.SchedulerType.Adaptive;
+            } else {
+                schedulerType =
+                        configuration
+                                .getOptional(JobManagerOptions.SCHEDULER)
+                                .orElse(
+                                        System.getProperties()
+                                                        .containsKey(
+                                                                "flink.tests.enable-adaptive-scheduler")
+                                                ? JobManagerOptions.SchedulerType.Adaptive
+                                                : JobManagerOptions.SchedulerType.Default);
+            }
         }
 
-        final Duration initialResourceAllocationTimeout =
-                configuration
-                        .getOptional(JobManagerOptions.RESOURCE_WAIT_TIMEOUT)
-                        .orElse(allocationTimeoutDefault);
+        return schedulerType;
+    }
 
-        final Duration resourceStabilizationTimeout =
-                configuration
-                        .getOptional(JobManagerOptions.RESOURCE_STABILIZATION_TIMEOUT)
-                        .orElse(stabilizationTimeoutDefault);
+    @VisibleForTesting
+    static RequestSlotMatchingStrategy getRequestSlotMatchingStrategy(
+            Configuration configuration, JobType jobType) {
+        final boolean isLocalRecoveryEnabled =
+                configuration.get(StateRecoveryOptions.LOCAL_RECOVERY);
 
-        return new AdaptiveSchedulerFactory(
-                initialResourceAllocationTimeout, resourceStabilizationTimeout);
+        if (isLocalRecoveryEnabled) {
+            if (jobType == JobType.STREAMING) {
+                return PreferredAllocationRequestSlotMatchingStrategy.INSTANCE;
+            } else {
+                LOG.warn(
+                        "Batch jobs do not support local recovery. Falling back for request slot matching strategy to {}.",
+                        SimpleRequestSlotMatchingStrategy.class.getSimpleName());
+                return SimpleRequestSlotMatchingStrategy.INSTANCE;
+            }
+        } else {
+            return SimpleRequestSlotMatchingStrategy.INSTANCE;
+        }
     }
 }

@@ -22,6 +22,7 @@ import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.UnresolvedReferenceExpression;
+import org.apache.flink.table.functions.DeclarativeAggregateFunction;
 import org.apache.flink.table.types.DataType;
 
 import static org.apache.flink.table.expressions.ApiExpressionUtils.unresolvedRef;
@@ -33,11 +34,12 @@ import static org.apache.flink.table.planner.expressions.ExpressionBuilder.nullO
 
 /** built-in listagg aggregate function. */
 public class ListAggFunction extends DeclarativeAggregateFunction {
-    private int operandCount;
-    private UnresolvedReferenceExpression acc = unresolvedRef("concatAcc");
-    private UnresolvedReferenceExpression accDelimiter = unresolvedRef("accDelimiter");
-    private Expression delimiter;
-    private Expression operand;
+
+    private final int operandCount;
+    private final UnresolvedReferenceExpression acc = unresolvedRef("concatAcc");
+    private final UnresolvedReferenceExpression accDelimiter = unresolvedRef("accDelimiter");
+    private final Expression delimiter;
+    private final Expression operand;
 
     public ListAggFunction(int operandCount) {
         this.operandCount = operandCount;

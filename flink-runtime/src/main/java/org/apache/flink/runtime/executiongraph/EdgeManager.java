@@ -30,7 +30,6 @@ import java.util.List;
 import java.util.Map;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
-import static org.apache.flink.util.Preconditions.checkState;
 
 /** Class that manages all the connections between tasks. */
 public class EdgeManager {
@@ -50,14 +49,9 @@ public class EdgeManager {
 
         checkNotNull(consumerVertexGroup);
 
-        final List<ConsumerVertexGroup> consumers =
+        List<ConsumerVertexGroup> groups =
                 getConsumerVertexGroupsForPartitionInternal(resultPartitionId);
-
-        // sanity check
-        checkState(
-                consumers.isEmpty(), "Currently there has to be exactly one consumer in real jobs");
-
-        consumers.add(consumerVertexGroup);
+        groups.add(consumerVertexGroup);
     }
 
     public void connectVertexWithConsumedPartitionGroup(
@@ -110,5 +104,10 @@ public class EdgeManager {
             IntermediateResultPartitionID resultPartitionId) {
         return Collections.unmodifiableList(
                 getConsumedPartitionGroupsByIdInternal(resultPartitionId));
+    }
+
+    public int getNumberOfConsumedPartitionGroupsById(
+            IntermediateResultPartitionID resultPartitionId) {
+        return getConsumedPartitionGroupsByIdInternal(resultPartitionId).size();
     }
 }

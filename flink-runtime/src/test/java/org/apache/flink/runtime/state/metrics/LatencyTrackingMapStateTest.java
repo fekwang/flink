@@ -25,17 +25,18 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.common.typeutils.base.IntSerializer;
 import org.apache.flink.runtime.state.AbstractKeyedStateBackend;
 import org.apache.flink.runtime.state.VoidNamespace;
+import org.apache.flink.util.function.SupplierWithException;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static org.junit.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for {@link LatencyTrackingMapState}. */
-public class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<Integer> {
+class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<Integer> {
     @Override
     @SuppressWarnings("unchecked")
     MapStateDescriptor<Integer, Double> getStateDescriptor() {
@@ -54,7 +55,7 @@ public class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<In
 
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public void testLatencyTrackingMapState() throws Exception {
+    void testLatencyTrackingMapState() throws Exception {
         AbstractKeyedStateBackend<Integer> keyedBackend = createKeyedBackend(getKeySerializer());
         try {
             LatencyTrackingMapState<Integer, VoidNamespace, Long, Double> latencyTrackingState =
@@ -64,54 +65,57 @@ public class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<In
             LatencyTrackingMapState.MapStateLatencyMetrics latencyTrackingStateMetric =
                     latencyTrackingState.getLatencyTrackingStateMetric();
 
-            assertEquals(0, latencyTrackingStateMetric.getContainsCount());
-            assertEquals(0, latencyTrackingStateMetric.getEntriesInitCount());
-            assertEquals(0, latencyTrackingStateMetric.getGetCount());
-            assertEquals(0, latencyTrackingStateMetric.getIsEmptyCount());
-            assertEquals(0, latencyTrackingStateMetric.getIteratorInitCount());
-            assertEquals(0, latencyTrackingStateMetric.getIteratorHasNextCount());
-            assertEquals(0, latencyTrackingStateMetric.getIteratorNextCount());
-            assertEquals(0, latencyTrackingStateMetric.getKeysInitCount());
-            assertEquals(0, latencyTrackingStateMetric.getValuesInitCount());
-            assertEquals(0, latencyTrackingStateMetric.getIteratorRemoveCount());
-            assertEquals(0, latencyTrackingStateMetric.getPutAllCount());
-            assertEquals(0, latencyTrackingStateMetric.getPutCount());
-            assertEquals(0, latencyTrackingStateMetric.getRemoveCount());
+            assertThat(latencyTrackingStateMetric.getContainsCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getEntriesInitCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getGetCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getIsEmptyCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getIteratorInitCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getIteratorHasNextCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getIteratorNextCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getKeysInitCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getValuesInitCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getIteratorRemoveCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getPutAllCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getPutCount()).isZero();
+            assertThat(latencyTrackingStateMetric.getRemoveCount()).isZero();
 
             setCurrentKey(keyedBackend);
             ThreadLocalRandom random = ThreadLocalRandom.current();
             for (int index = 1; index <= SAMPLE_INTERVAL; index++) {
                 int expectedResult = index == SAMPLE_INTERVAL ? 0 : index;
                 latencyTrackingState.put(random.nextLong(), random.nextDouble());
-                assertEquals(expectedResult, latencyTrackingStateMetric.getPutCount());
+                assertThat(latencyTrackingStateMetric.getPutCount()).isEqualTo(expectedResult);
 
                 latencyTrackingState.putAll(
                         Collections.singletonMap(random.nextLong(), random.nextDouble()));
-                assertEquals(expectedResult, latencyTrackingStateMetric.getPutAllCount());
+                assertThat(latencyTrackingStateMetric.getPutAllCount()).isEqualTo(expectedResult);
 
                 latencyTrackingState.get(random.nextLong());
-                assertEquals(expectedResult, latencyTrackingStateMetric.getGetCount());
+                assertThat(latencyTrackingStateMetric.getGetCount()).isEqualTo(expectedResult);
 
                 latencyTrackingState.remove(random.nextLong());
-                assertEquals(expectedResult, latencyTrackingStateMetric.getRemoveCount());
+                assertThat(latencyTrackingStateMetric.getRemoveCount()).isEqualTo(expectedResult);
 
                 latencyTrackingState.contains(random.nextLong());
-                assertEquals(expectedResult, latencyTrackingStateMetric.getContainsCount());
+                assertThat(latencyTrackingStateMetric.getContainsCount()).isEqualTo(expectedResult);
 
                 latencyTrackingState.isEmpty();
-                assertEquals(expectedResult, latencyTrackingStateMetric.getIsEmptyCount());
+                assertThat(latencyTrackingStateMetric.getIsEmptyCount()).isEqualTo(expectedResult);
 
                 latencyTrackingState.entries();
-                assertEquals(expectedResult, latencyTrackingStateMetric.getEntriesInitCount());
+                assertThat(latencyTrackingStateMetric.getEntriesInitCount())
+                        .isEqualTo(expectedResult);
 
                 latencyTrackingState.keys();
-                assertEquals(expectedResult, latencyTrackingStateMetric.getKeysInitCount());
+                assertThat(latencyTrackingStateMetric.getKeysInitCount()).isEqualTo(expectedResult);
 
                 latencyTrackingState.values();
-                assertEquals(expectedResult, latencyTrackingStateMetric.getValuesInitCount());
+                assertThat(latencyTrackingStateMetric.getValuesInitCount())
+                        .isEqualTo(expectedResult);
 
                 latencyTrackingState.iterator();
-                assertEquals(expectedResult, latencyTrackingStateMetric.getIteratorInitCount());
+                assertThat(latencyTrackingStateMetric.getIteratorInitCount())
+                        .isEqualTo(expectedResult);
             }
         } finally {
             if (keyedBackend != null) {
@@ -123,7 +127,7 @@ public class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<In
 
     @Test
     @SuppressWarnings({"unchecked", "rawtypes"})
-    public void testLatencyTrackingMapStateIterator() throws Exception {
+    void testLatencyTrackingMapStateIterator() throws Exception {
         AbstractKeyedStateBackend<Integer> keyedBackend = createKeyedBackend(getKeySerializer());
         try {
             LatencyTrackingMapState<Integer, VoidNamespace, Long, Double> latencyTrackingState =
@@ -138,22 +142,22 @@ public class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<In
             verifyIterator(
                     latencyTrackingState,
                     latencyTrackingStateMetric,
-                    latencyTrackingState.iterator(),
+                    latencyTrackingState::iterator,
                     true);
             verifyIterator(
                     latencyTrackingState,
                     latencyTrackingStateMetric,
-                    latencyTrackingState.entries().iterator(),
+                    () -> latencyTrackingState.entries().iterator(),
                     true);
             verifyIterator(
                     latencyTrackingState,
                     latencyTrackingStateMetric,
-                    latencyTrackingState.keys().iterator(),
+                    () -> latencyTrackingState.keys().iterator(),
                     false);
             verifyIterator(
                     latencyTrackingState,
                     latencyTrackingStateMetric,
-                    latencyTrackingState.values().iterator(),
+                    () -> latencyTrackingState.values().iterator(),
                     false);
         } finally {
             if (keyedBackend != null) {
@@ -166,7 +170,7 @@ public class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<In
     private <E> void verifyIterator(
             LatencyTrackingMapState<Integer, VoidNamespace, Long, Double> latencyTrackingState,
             LatencyTrackingMapState.MapStateLatencyMetrics latencyTrackingStateMetric,
-            Iterator<E> iterator,
+            SupplierWithException<Iterator<E>, Exception> iteratorSupplier,
             boolean removeIterator)
             throws Exception {
         ThreadLocalRandom random = ThreadLocalRandom.current();
@@ -174,16 +178,19 @@ public class LatencyTrackingMapStateTest extends LatencyTrackingStateTestBase<In
             latencyTrackingState.put((long) index, random.nextDouble());
         }
         int count = 1;
+        Iterator<E> iterator = iteratorSupplier.get();
         while (iterator.hasNext()) {
             int expectedResult = count == SAMPLE_INTERVAL ? 0 : count;
-            assertEquals(expectedResult, latencyTrackingStateMetric.getIteratorHasNextCount());
+            assertThat(latencyTrackingStateMetric.getIteratorHasNextCount())
+                    .isEqualTo(expectedResult);
 
             iterator.next();
-            assertEquals(expectedResult, latencyTrackingStateMetric.getIteratorNextCount());
+            assertThat(latencyTrackingStateMetric.getIteratorNextCount()).isEqualTo(expectedResult);
 
             if (removeIterator) {
                 iterator.remove();
-                assertEquals(expectedResult, latencyTrackingStateMetric.getIteratorRemoveCount());
+                assertThat(latencyTrackingStateMetric.getIteratorRemoveCount())
+                        .isEqualTo(expectedResult);
             }
             count += 1;
         }

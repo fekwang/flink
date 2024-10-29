@@ -27,21 +27,28 @@ under the License.
 # SHOW 语句
 
 
+SHOW 语句用于列出其相应父对象中的对象，例如 catalog、database、table 和 view、column、function 和 module。有关详细信息和其他选项，请参见各个命令。
 
-SHOW 语句用于列出所有的 catalog，或者列出当前 catalog 中所有的 database，或者列出当前 catalog 和当前 database 的所有表或视图，或者列出当前正在使用的 catalog 和 database, 或者列出创建指定表的语句，或者列出当前 catalog 和当前 database 中所有的 function，包括：系统 function 和用户定义的 function，或者仅仅列出当前 catalog 和当前 database 中用户定义的 function，或者列出当前环境所有激活的 module，或者列出当前环境所有加载的 module 及激活状态。
+SHOW CREATE 语句用于打印给定对象的创建 DDL 语句。当前的 SHOW CREATE 语句仅在打印给定表和视图的 DDL 语句时可用。
 
 目前 Flink SQL 支持下列 SHOW 语句：
 - SHOW CATALOGS
 - SHOW CURRENT CATALOG
+- SHOW CREATE CATALOG
 - SHOW DATABASES
 - SHOW CURRENT DATABASE
 - SHOW TABLES
 - SHOW CREATE TABLE
+- SHOW COLUMNS
+- SHOW PARTITIONS
+- SHOW PROCEDURES
 - SHOW VIEWS
+- SHOW CREATE VIEW
 - SHOW FUNCTIONS
 - SHOW MODULES
 - SHOW FULL MODULES
 - SHOW JARS
+- SHOW JOBS
 
 
 ## 执行 SHOW 语句
@@ -96,6 +103,22 @@ tEnv.executeSql("SHOW CURRENT CATALOG").print();
 // |      default_catalog |
 // +----------------------+
 
+// create a catalog
+tEnv.executeSql("CREATE CATALOG cat2 WITH (...)");
+
+// show create catalog
+tEnv.executeSql("SHOW CREATE CATALOG cat2").print();
+// +---------------------------------------------------------------------------------------------+
+// |                                                                                      result |
+// +---------------------------------------------------------------------------------------------+
+// | CREATE CATALOG `cat2` WITH (
+//   'default-database' = 'db',
+//   'type' = 'generic_in_memory'
+// )
+// |
+// +---------------------------------------------------------------------------------------------+
+// 1 row in set
+
 // show databases
 tEnv.executeSql("SHOW DATABASES").print();
 // +------------------+
@@ -130,9 +153,17 @@ tEnv.executeSql("SHOW CREATE TABLE my_table").print();
 //   ...
 // )
 
+// show columns
+tEnv.executeSql("SHOW COLUMNS FROM my_table LIKE '%f%'").print();
+// +--------+-------+------+-----+--------+-----------+
+// |   name |  type | null | key | extras | watermark |
+// +--------+-------+------+-----+--------+-----------+
+// | field2 | BYTES | true |     |        |           |
+// +--------+-------+------+-----+--------+-----------+
+
 
 // create a view
-tEnv.executeSql("CREATE VIEW my_view AS ...");
+tEnv.executeSql("CREATE VIEW my_view AS SELECT * FROM my_table");
 // show views
 tEnv.executeSql("SHOW VIEWS").print();
 // +-----------+
@@ -140,6 +171,12 @@ tEnv.executeSql("SHOW VIEWS").print();
 // +-----------+
 // |   my_view |
 // +-----------+
+
+// show create view
+tEnv.executeSql("SHOW CREATE VIEW my_view").print();
+// CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+// SELECT *
+// FROM `default_catalog`.`default_database`.`my_table`
 
 // show functions
 tEnv.executeSql("SHOW FUNCTIONS").print();
@@ -194,6 +231,22 @@ tEnv.executeSql("SHOW CATALOGS").print()
 // | default_catalog |
 // +-----------------+
 
+// create a catalog
+tEnv.executeSql("CREATE CATALOG cat2 WITH (...)")
+
+// show create catalog
+tEnv.executeSql("SHOW CREATE CATALOG cat2").print()
+// +---------------------------------------------------------------------------------------------+
+// |                                                                                      result |
+// +---------------------------------------------------------------------------------------------+
+// | CREATE CATALOG `cat2` WITH (
+//   'default-database' = 'db',
+//   'type' = 'generic_in_memory'
+// )
+// |
+// +---------------------------------------------------------------------------------------------+
+// 1 row in set
+
 // show databases
 tEnv.executeSql("SHOW DATABASES").print()
 // +------------------+
@@ -219,8 +272,17 @@ tEnv.executeSql("SHOW CREATE TABLE my_table").print()
 // ) WITH (
 //  ...
 // )
+
+// show columns
+tEnv.executeSql("SHOW COLUMNS FROM my_table LIKE '%f%'").print()
+// +--------+-------+------+-----+--------+-----------+
+// |   name |  type | null | key | extras | watermark |
+// +--------+-------+------+-----+--------+-----------+
+// | field2 | BYTES | true |     |        |           |
+// +--------+-------+------+-----+--------+-----------+
+
 // create a view
-tEnv.executeSql("CREATE VIEW my_view AS ...")
+tEnv.executeSql("CREATE VIEW my_view AS SELECT * FROM my_table")
 // show views
 tEnv.executeSql("SHOW VIEWS").print()
 // +-----------+
@@ -228,6 +290,12 @@ tEnv.executeSql("SHOW VIEWS").print()
 // +-----------+
 // |   my_view |
 // +-----------+
+
+// show create view
+tEnv.executeSql("SHOW CREATE VIEW my_view").print();
+// CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+// SELECT *
+// FROM `default_catalog`.`default_database`.`my_table`
 
 // show functions
 tEnv.executeSql("SHOW FUNCTIONS").print()
@@ -281,6 +349,22 @@ table_env.execute_sql("SHOW CATALOGS").print()
 # | default_catalog |
 # +-----------------+
 
+# create a catalog
+table_env.execute_sql("CREATE CATALOG cat2 WITH (...)")
+
+# show create catalog
+table_env.execute_sql("SHOW CREATE CATALOG cat2").print()
+# +---------------------------------------------------------------------------------------------+
+# |                                                                                      result |
+# +---------------------------------------------------------------------------------------------+
+# | CREATE CATALOG `cat2` WITH (
+#   'default-database' = 'db',
+#   'type' = 'generic_in_memory'
+# )
+#  |
+# +---------------------------------------------------------------------------------------------+
+# 1 row in set
+
 # show databases
 table_env.execute_sql("SHOW DATABASES").print()
 # +------------------+
@@ -306,8 +390,16 @@ table_env.executeSql("SHOW CREATE TABLE my_table").print()
 #   ...
 # )
 
+# show columns
+table_env.execute_sql("SHOW COLUMNS FROM my_table LIKE '%f%'").print()
+# +--------+-------+------+-----+--------+-----------+
+# |   name |  type | null | key | extras | watermark |
+# +--------+-------+------+-----+--------+-----------+
+# | field2 | BYTES | true |     |        |           |
+# +--------+-------+------+-----+--------+-----------+
+
 # create a view
-table_env.execute_sql("CREATE VIEW my_view AS ...")
+table_env.execute_sql("CREATE VIEW my_view AS SELECT * FROM my_table")
 # show views
 table_env.execute_sql("SHOW VIEWS").print()
 # +-----------+
@@ -315,6 +407,12 @@ table_env.execute_sql("SHOW VIEWS").print()
 # +-----------+
 # |   my_view |
 # +-----------+
+
+# show create view
+table_env.execute_sql("SHOW CREATE VIEW my_view").print()
+# CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+# SELECT *
+# FROM `default_catalog`.`default_database`.`my_table`
 
 # show functions
 table_env.execute_sql("SHOW FUNCTIONS").print()
@@ -353,6 +451,7 @@ table_env.execute_sql("SHOW FULL MODULES").print()
 # |        core |  true |
 # |        hive | false |
 # +-------------+-------+
+
 ```
 {{< /tab >}}
 {{< tab "SQL CLI" >}}
@@ -360,6 +459,14 @@ table_env.execute_sql("SHOW FULL MODULES").print()
 
 Flink SQL> SHOW CATALOGS;
 default_catalog
+
+Flink SQL> CREATE CATALOG cat2 WITH (...);
+[INFO] Execute statement succeeded.
+ 
+Flink SQL> SHOW CREATE CATALOG cat2;
+CREATE CATALOG `cat2` WITH (
+  ...
+)
 
 Flink SQL> SHOW DATABASES;
 default_database
@@ -377,11 +484,26 @@ CREATE TABLE `default_catalog`.`default_db`.`my_table` (
   ...
 )
 
-Flink SQL> CREATE VIEW my_view AS ...;
+
+Flink SQL> SHOW COLUMNS from MyUserTable LIKE '%f%';
++--------+-------+------+-----+--------+-----------+
+|   name |  type | null | key | extras | watermark |
++--------+-------+------+-----+--------+-----------+
+| field2 | BYTES | true |     |        |           |
++--------+-------+------+-----+--------+-----------+
+1 row in set
+
+
+Flink SQL> CREATE VIEW my_view AS SELECT * from my_table;
 [INFO] View has been created.
 
 Flink SQL> SHOW VIEWS;
 my_view
+
+Flink SQL> SHOW CREATE VIEW my_view;
+CREATE VIEW `default_catalog`.`default_db`.`my_view`(`field1`, `field2`, ...) as
+SELECT *
+FROM `default_catalog`.`default_database`.`my_table`
 
 Flink SQL> SHOW FUNCTIONS;
 mod
@@ -412,8 +534,10 @@ Flink SQL> SHOW FULL MODULES;
 +-------------+------+
 1 row in set
 
+
 Flink SQL> SHOW JARS;
 /path/to/addedJar.jar
+
 
 ```
 {{< /tab >}}
@@ -424,10 +548,52 @@ Flink SQL> SHOW JARS;
 ## SHOW CATALOGS
 
 ```sql
-SHOW CATALOGS
+SHOW CATALOGS [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]
 ```
 
-展示所有的 catalog。
+展示所有的 catalog。另外返回的结果能被一个可选的匹配字符串过滤。
+
+**LIKE**
+根据可选的 `LIKE` 语句与 `<sql_like_pattern>` 是否模糊匹配的所有 catalog。
+
+`LIKE` 子句中 SQL 正则式的语法与 `MySQL` 方言中的语法相同。
+* `%` 匹配任意数量的字符, 也包括0数量字符, `\%` 匹配一个 `%` 字符.
+* `_` 只匹配一个字符, `\_` 匹配一个 `_` 字符.
+
+**ILIKE**
+它的行为和 LIKE 相同，只是对于大小写是不敏感的。
+
+### SHOW CATALOGS 示例
+
+假定我们在当前 flink session 中有 `catalog1` 和 `catalog2`。
+
+- 显示所有的 catalog。
+
+```sql
+show catalogs;
++-----------------+
+|    catalog name |
++-----------------+
+|        catalog1 |
+|        catalog2 |
+| default_catalog |
++-----------------+
+3 rows in set
+```
+
+- 显示模糊匹配指定 SQL 正则式的所有catalog。
+
+```sql
+show catalogs like '%log1';
+-- show catalogs ilike '%log1';
+-- show catalogs ilike '%LOG1';
++--------------+
+| catalog name |
++--------------+
+|     catalog1 |
++--------------+
+1 row in set
+```
 
 ## SHOW CURRENT CATALOG
 
@@ -437,10 +603,42 @@ SHOW CURRENT CATALOG
 
 显示当前正在使用的 catalog。
 
+## SHOW CREATE CATALOG
+
+```sql
+SHOW CREATE CATALOG catalog_name
+```
+
+展示一个现有 catalog 的创建语句。
+
+该语句的输出内容包括 catalog 的名称和相关属性，使您可以直观地了解相应 catalog 的元数据。
+
+假设 `cat2` 是按如下方式创建的：
+```sql
+create catalog cat2 WITH (
+    'type'='generic_in_memory',
+    'default-database'='db'
+);
+```
+展示 catalog 创建语句。
+```sql
+show create catalog cat2;
++---------------------------------------------------------------------------------------------+
+|                                                                                      result |
++---------------------------------------------------------------------------------------------+
+| CREATE CATALOG `cat2` WITH (
+  'default-database' = 'db',
+  'type' = 'generic_in_memory'
+)
+ |
++---------------------------------------------------------------------------------------------+
+1 row in set
+```
+
 ## SHOW DATABASES
 
 ```sql
-SHOW DATABASES
+SHOW DATABASES [ ( FROM | IN ) catalog_name] [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]
 ```
 
 展示当前 catalog 中所有的 database。
@@ -456,39 +654,348 @@ SHOW CURRENT DATABASE
 ## SHOW TABLES
 
 ```sql
-SHOW TABLES
+SHOW TABLES [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] LIKE <sql_like_pattern> ]
 ```
 
-展示当前 catalog 和当前 database 中所有的表。
+展示指定库的所有表，如果没有指定库则展示当前库的所有表。另外返回的结果能被一个可选的匹配字符串过滤。
+
+**LIKE**
+根据可选的 `LIKE` 语句展示给定库中与 `<sql_like_pattern>` 是否模糊相似的所有表。
+
+`LIKE` 子句中 sql 正则式的语法与 `MySQL` 方言中的语法相同。
+* `%` 匹配任意数量的字符, 也包括0数量字符, `\%` 匹配一个 `%` 字符.
+* `_` 只匹配一个字符, `\_` 匹配一个 `_` 字符.
+
+
+### SHOW TABLES 示例
+
+假定在 `catalog1` 的 `db1` 库有如下表：
+* person
+* dim
+
+在会话的当前库下有如下表：
+* items
+* orders
+
+- 显示指定库的所有表。
+
+```sql
+show tables from db1;
+-- show tables from catalog1.db1;
+-- show tables in db1;
+-- show tables in catalog1.db1;
++------------+
+| table name |
++------------+
+|        dim |
+|     person |
++------------+
+2 rows in set
+```
+
+- 显示指定库中相似于指定 SQL 正则式的所有表。
+
+```sql
+show tables from db1 like '%n';
+-- show tables from catalog1.db1 like '%n';
+-- show tables in db1 like '%n';
+-- show tables in catalog1.db1 like '%n';
++------------+
+| table name |
++------------+
+|     person |
++------------+
+1 row in set
+```
+
+- 显示指定库中不相似于指定 SQL 正则式的所有表。
+
+```sql
+show tables from db1 not like '%n';
+-- show tables from catalog1.db1 not like '%n';
+-- show tables in db1 not like '%n';
+-- show tables in catalog1.db1 not like '%n';
++------------+
+| table name |
++------------+
+|        dim |
++------------+
+1 row in set
+```
+
+- 显示当前库中的所有表。
+
+```sql
+show tables;
++------------+
+| table name |
++------------+
+|      items |
+|     orders |
++------------+
+2 rows in set
+```
 
 ## SHOW CREATE TABLE
 
 ```sql
-SHOW CREATE TABLE [catalog_name.][db_name.]table_name
+SHOW CREATE TABLE [[catalog_name.]db_name.]table_name
 ```
 
 展示创建指定表的 create 语句。
 
+该语句的输出内容包括表名、列名、数据类型、约束、注释和配置。
+
+当您需要了解现有表的结构、配置和约束，或在另一个数据库中重新创建表时，这个语句非常有用。
+
+假设表 `orders` 是按如下方式创建的：
+```sql
+CREATE TABLE orders (
+  order_id BIGINT NOT NULL comment 'this is the primary key, named ''order_id''.',
+  product VARCHAR(32),
+  amount INT,
+  ts TIMESTAMP(3) comment 'notice: watermark, named ''ts''.',
+  ptime AS PROCTIME() comment 'notice: computed column, named ''ptime''.',
+  WATERMARK FOR ts AS ts - INTERVAL '1' SECOND,
+  CONSTRAINT `PK_order_id` PRIMARY KEY (order_id) NOT ENFORCED
+) WITH (
+  'connector' = 'datagen'
+);
+```
+展示表创建语句。
+```sql
+show create table orders;
++---------------------------------------------------------------------------------------------+
+|                                                                                      result |
++---------------------------------------------------------------------------------------------+
+| CREATE TABLE `default_catalog`.`default_database`.`orders` (
+  `order_id` BIGINT NOT NULL COMMENT 'this is the primary key, named ''order_id''.',
+  `product` VARCHAR(32),
+  `amount` INT,
+  `ts` TIMESTAMP(3) COMMENT 'notice: watermark, named ''ts''.',
+  `ptime` AS PROCTIME() COMMENT 'notice: computed column, named ''ptime''.',
+  WATERMARK FOR `ts` AS `ts` - INTERVAL '1' SECOND,
+  CONSTRAINT `PK_order_id` PRIMARY KEY (`order_id`) NOT ENFORCED
+) WITH (
+  'connector' = 'datagen'
+)
+ |
++---------------------------------------------------------------------------------------------+
+1 row in set
+```
+
 <span class="label label-danger">Attention</span> 目前 `SHOW CREATE TABLE` 只支持通过 Flink SQL DDL 创建的表。
+
+## SHOW COLUMNS
+
+```sql
+SHOW COLUMNS ( FROM | IN ) [[catalog_name.]database.]<table_name> [ [NOT] LIKE <sql_like_pattern>]
+```
+
+展示给定表的所有列。
+
+**LIKE**
+根据可选的 `LIKE` 语句展示给定表中与 `<sql_like_pattern>` 是否模糊相似的所有列。
+
+`LIKE` 子句中 sql 正则式的语法与 `MySQL` 方言中的语法相同。
+
+<a name="show-columns-examples"></a>
+
+### SHOW COLUMNS 示例
+
+假定在 `catalog1` catalog 中的 `database1` 数据库中有名为 `orders` 的表，其结构如下所示：
+```sql
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    name |                        type |  null |       key |        extras |                  watermark |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    user |                      BIGINT | false | PRI(user) |               |                            |
+| product |                 VARCHAR(32) |  true |           |               |                            |
+|  amount |                         INT |  true |           |               |                            |
+|      ts |      TIMESTAMP(3) *ROWTIME* |  true |           |               | `ts` - INTERVAL '1' SECOND |
+|   ptime | TIMESTAMP_LTZ(3) *PROCTIME* | false |           | AS PROCTIME() |                            |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+```
+
+- 显示指定表中的所有列。
+
+```sql
+show columns from orders;
+-- show columns from database1.orders;
+-- show columns from catalog1.database1.orders;
+-- show columns in orders;
+-- show columns in database1.orders;
+-- show columns in catalog1.database1.orders;
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    name |                        type |  null |       key |        extras |                  watermark |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+|    user |                      BIGINT | false | PRI(user) |               |                            |
+| product |                 VARCHAR(32) |  true |           |               |                            |
+|  amount |                         INT |  true |           |               |                            |
+|      ts |      TIMESTAMP(3) *ROWTIME* |  true |           |               | `ts` - INTERVAL '1' SECOND |
+|   ptime | TIMESTAMP_LTZ(3) *PROCTIME* | false |           | AS PROCTIME() |                            |
++---------+-----------------------------+-------+-----------+---------------+----------------------------+
+5 rows in set
+```
+
+- 显示指定表中相似于指定 SQL 正则式的所有列。
+
+```sql
+show columns from orders like '%r';
+-- show columns from database1.orders like '%r';
+-- show columns from catalog1.database1.orders like '%r';
+-- show columns in orders like '%r';
+-- show columns in database1.orders like '%r';
+-- show columns in catalog1.database1.orders like '%r';
++------+--------+-------+-----------+--------+-----------+
+| name |   type |  null |       key | extras | watermark |
++------+--------+-------+-----------+--------+-----------+
+| user | BIGINT | false | PRI(user) |        |           |
++------+--------+-------+-----------+--------+-----------+
+1 row in set
+```
+
+- 显示指定表中不相似于指定 SQL 正则式的所有列。
+
+```sql
+show columns from orders not like '%_r';
+-- show columns from database1.orders not like '%_r';
+-- show columns from catalog1.database1.orders not like '%_r';
+-- show columns in orders not like '%_r';
+-- show columns in database1.orders not like '%_r';
+-- show columns in catalog1.database1.orders not like '%_r';
++---------+-----------------------------+-------+-----+---------------+----------------------------+
+|    name |                        type |  null | key |        extras |                  watermark |
++---------+-----------------------------+-------+-----+---------------+----------------------------+
+| product |                 VARCHAR(32) |  true |     |               |                            |
+|  amount |                         INT |  true |     |               |                            |
+|      ts |      TIMESTAMP(3) *ROWTIME* |  true |     |               | `ts` - INTERVAL '1' SECOND |
+|   ptime | TIMESTAMP_LTZ(3) *PROCTIME* | false |     | AS PROCTIME() |                            |
++---------+-----------------------------+-------+-----+---------------+----------------------------+
+4 rows in set
+```
+
+## SHOW PARTITIONS
+
+```sql
+SHOW PARTITIONS [[catalog_name.]database.]<table_name> [ PARTITION <partition_spec>]
+
+<partition_spec>:
+  (key1=val1, key2=val2, ...)
+```
+
+展示给定分区表的所有分区。
+
+**PARTITION**
+根据可选的 `PARTITION` 语句展示给定分区表中在指定的 `<partition_spec>` 分区下的所有分区。
+
+### SHOW PARTITIONS 示例
+
+假定在 `catalog1` catalog 中的 `database1` 数据库中有名为 `table1` 的分区表，其包含的所有分区如下所示：
+
+```sql
++---------+-----------------------------+
+|      id |                        date |
++---------+-----------------------------+
+|    1001 |                  2020-01-01 |
+|    1002 |                  2020-01-01 |
+|    1002 |                  2020-01-02 |
++---------+-----------------------------+
+```
+
+- 显示指定分区表中的所有分区。
+
+```sql
+show partitions table1;
+-- show partitions database1.table1;
+-- show partitions catalog1.database1.table1;
++---------+-----------------------------+
+|      id |                        date |
++---------+-----------------------------+
+|    1001 |                  2020-01-01 |
+|    1002 |                  2020-01-01 |
+|    1002 |                  2020-01-02 |
++---------+-----------------------------+
+3 rows in set
+```
+
+- 显示指定分区表在指定分区下的所有分区。
+
+```sql
+show partitions table1 partition (id=1002);
+-- show partitions database1.table1 partition (id=1002);
+-- show partitions catalog1.database1.table1 partition (id=1002);
++---------+-----------------------------+
+|      id |                        date |
++---------+-----------------------------+
+|    1002 |                  2020-01-01 |
+|    1002 |                  2020-01-02 |
++---------+-----------------------------+
+2 rows in set
+```
+
+## SHOW PROCEDURES
+
+```sql
+SHOW PROCEDURES [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]	
+```
+
+展示指定 catalog 和 database 下的所有 procedure。
+如果没有指定 catalog 和 database，则将使用当前 catalog 和 当前 database。另外可以用 `<sql_like_pattern>` 来过滤要返回的 procedure。
+
+**LIKE**
+根据可选的 `LIKE` 语句与 `<sql_like_pattern>` 是否模糊匹配的所有 procedure。
+
+`LIKE` 子句中 SQL 正则式的语法与 `MySQL` 方言中的语法相同。
+* `%` 匹配任意数量的字符, 也包括0数量字符, `\%` 匹配一个 `%` 字符.
+* `_` 只匹配一个字符, `\_` 匹配一个 `_` 字符.
+
+**ILIKE**
+它的行为和 LIKE 相同，只是对于大小写是不敏感的。
 
 ## SHOW VIEWS
 
 ```sql
-SHOW VIEWS
+SHOW VIEWS [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] LIKE <sql_like_pattern> ]
 ```
 
-展示当前 catalog 和当前 database 中所有的视图。
+Show all views for an optionally specified database. If no database is specified then the views are returned from the current database. Additionally, the output of this statement may be filtered by an optional matching pattern.
+
+**LIKE**
+Show all views with given view name and optional `LIKE` clause, whose name is whether similar to the `<sql_like_pattern>`.
+
+The syntax of sql pattern in `LIKE` clause is the same as that of `MySQL` dialect.
+* `%` matches any number of characters, even zero characters, `\%` matches one `%` character.
+* `_` matches exactly one character, `\_` matches one `_` character.
+
+## SHOW CREATE VIEW
+
+```sql
+SHOW CREATE VIEW [catalog_name.][db_name.]view_name
+```
+
+展示创建指定视图的 create 语句。
 
 ## SHOW FUNCTIONS
 
 ```sql
-SHOW [USER] FUNCTIONS
+SHOW [USER] FUNCTIONS [ ( FROM | IN ) [catalog_name.]database_name ] [ [NOT] (LIKE | ILIKE) <sql_like_pattern> ]
 ```
 
-展示当前 catalog 和当前 database 中所有的 function，包括：系统 function 和用户定义的 function。
+展示指定 catalog 和 database 下的所有 function，包括：系统 function 和用户定义的 function。
+如果没有指定 catalog 和 database，则将使用当前 catalog 和 当前 database。另外可以用 `<sql_like_pattern>` 来过滤要返回的 function。
 
 **USER**
-仅仅展示当前 catalog 和当前 database 中用户定义的 function。
+仅展示用户定义的 function, 另外可以用 `<sql_like_pattern>` 来过滤要返回的 function。
+
+**LIKE**
+根据可选的 `LIKE` 语句与 `<sql_like_pattern>` 是否模糊匹配的所有 function。
+
+`LIKE` 子句中 SQL 正则式的语法与 `MySQL` 方言中的语法相同。
+* `%` 匹配任意数量的字符, 也包括0数量字符, `\%` 匹配一个 `%` 字符.
+* `_` 只匹配一个字符, `\_` 匹配一个 `_` 字符.
+
+**ILIKE**
+它的行为和 LIKE 相同，只是对于大小写是不敏感的。
 
 ## SHOW MODULES
 
@@ -509,6 +1016,16 @@ SHOW JARS
 
 展示所有通过 [`ADD JAR`]({{< ref "docs/dev/table/sql/jar" >}}#add-jar) 语句加入到 session classloader 中的 jar。
 
-<span class="label label-danger">Attention</span> 当前 SHOW JARS 命令只能在 [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}) 中使用。
+<span class="label label-danger">Attention</span> 当前 SHOW JARS 命令只能在 [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}) 或者 [SQL Gateway]({{< ref "docs/dev/table/sql-gateway/overview" >}}) 中使用.
+
+## SHOW JOBS
+
+```sql
+SHOW JOBS
+```
+
+展示集群中所有作业。
+
+<span class="label label-danger">Attention</span> 当前 SHOW JOBS 命令只能在 [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}) 或者 [SQL Gateway]({{< ref "docs/dev/table/sql-gateway/overview" >}}) 中使用.
 
 {{< top >}}

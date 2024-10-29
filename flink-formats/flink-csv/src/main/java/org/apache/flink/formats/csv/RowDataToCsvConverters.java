@@ -19,6 +19,7 @@
 package org.apache.flink.formats.csv;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.formats.common.Converter;
 import org.apache.flink.table.data.ArrayData;
 import org.apache.flink.table.data.DecimalData;
 import org.apache.flink.table.data.RowData;
@@ -37,6 +38,7 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.node.Obje
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.dataformat.csv.CsvMapper;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -46,6 +48,7 @@ import static java.time.format.DateTimeFormatter.ISO_LOCAL_DATE;
 import static java.time.format.DateTimeFormatter.ISO_LOCAL_TIME;
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIMESTAMP_FORMAT;
 import static org.apache.flink.formats.common.TimeFormats.SQL_TIMESTAMP_WITH_LOCAL_TIMEZONE_FORMAT;
+import static org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN;
 
 /** Tool class used to convert from {@link RowData} to CSV-format {@link JsonNode}. * */
 @Internal
@@ -57,8 +60,23 @@ public class RowDataToCsvConverters implements Serializable {
      * Runtime converter that converts objects of Flink Table & SQL internal data structures to
      * corresponding {@link JsonNode}s.
      */
-    public interface RowDataToCsvConverter extends Serializable {
-        JsonNode convert(CsvMapper csvMapper, ContainerNode<?> container, RowData row);
+    interface RowDataToCsvConverter
+            extends Converter<
+                    RowData, JsonNode, RowDataToCsvConverter.RowDataToCsvFormatConverterContext> {
+        /**
+         * Converter context for passing the {@code CsvMapper} and the {@code container} that can be
+         * reused between transformations of the individual elements for performance reasons.
+         */
+        class RowDataToCsvFormatConverterContext {
+            CsvMapper csvMapper;
+            ContainerNode<?> container;
+
+            public RowDataToCsvFormatConverterContext(
+                    CsvMapper csvMapper, ContainerNode<?> container) {
+                this.csvMapper = csvMapper;
+                this.container = container;
+            }
+        }
     }
 
     private interface RowFieldConverter extends Serializable {
@@ -80,14 +98,15 @@ public class RowDataToCsvConverters implements Serializable {
                         .map(RowDataToCsvConverters::createNullableRowFieldConverter)
                         .toArray(RowFieldConverter[]::new);
         final int rowArity = type.getFieldCount();
-        return (csvMapper, container, row) -> {
+        return (row, context) -> {
             // top level reuses the object node container
-            final ObjectNode objectNode = (ObjectNode) container;
+            final ObjectNode objectNode = (ObjectNode) context.container;
             for (int i = 0; i < rowArity; i++) {
                 try {
                     objectNode.set(
                             fieldNames[i],
-                            fieldConverters[i].convert(csvMapper, container, row, i));
+                            fieldConverters[i].convert(
+                                    context.csvMapper, context.container, row, i));
                 } catch (Throwable t) {
                     throw new RuntimeException(
                             String.format("Fail to serialize at field: %s.", fieldNames[i]), t);
@@ -258,7 +277,7 @@ public class RowDataToCsvConverters implements Serializable {
         final int scale = decimalType.getScale();
         return (csvMapper, container, row, pos) -> {
             DecimalData decimal = row.getDecimal(pos, precision, scale);
-            return convertDecimal(decimal, container);
+            return convertDecimal(csvMapper, decimal, container);
         };
     }
 
@@ -268,12 +287,17 @@ public class RowDataToCsvConverters implements Serializable {
         final int scale = decimalType.getScale();
         return (csvMapper, container, array, pos) -> {
             DecimalData decimal = array.getDecimal(pos, precision, scale);
-            return convertDecimal(decimal, container);
+            return convertDecimal(csvMapper, decimal, container);
         };
     }
 
-    private static JsonNode convertDecimal(DecimalData decimal, ContainerNode<?> container) {
-        return container.numberNode(decimal.toBigDecimal());
+    private static JsonNode convertDecimal(
+            CsvMapper csvMapper, DecimalData decimal, ContainerNode<?> container) {
+        BigDecimal bigDecimal = decimal.toBigDecimal();
+        return container.numberNode(
+                csvMapper.isEnabled(WRITE_BIGDECIMAL_AS_PLAIN)
+                        ? bigDecimal
+                        : bigDecimal.stripTrailingZeros());
     }
 
     private static JsonNode convertDate(int days, ContainerNode<?> container) {

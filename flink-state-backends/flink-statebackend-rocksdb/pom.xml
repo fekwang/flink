@@ -19,22 +19,28 @@ under the License.
 
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
-         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+		 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+		 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
 
 	<modelVersion>4.0.0</modelVersion>
 
 	<parent>
 		<groupId>org.apache.flink</groupId>
 		<artifactId>flink-state-backends</artifactId>
-		<version>1.14-SNAPSHOT</version>
-		<relativePath>..</relativePath>
+		<version>2.0-SNAPSHOT</version>
 	</parent>
 
-	<artifactId>flink-statebackend-rocksdb_${scala.binary.version}</artifactId>
+	<artifactId>flink-statebackend-rocksdb</artifactId>
 	<name>Flink : State backends : RocksDB</name>
 
 	<packaging>jar</packaging>
+
+	<properties>
+		<surefire.module.config><!--
+			chill ArraysAsListSerializer
+			-->--add-opens=java.base/java.util=ALL-UNNAMED
+		</surefire.module.config>
+	</properties>
 
 	<dependencies>
 
@@ -42,14 +48,14 @@ under the License.
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
+			<artifactId>flink-streaming-java</artifactId>
 			<version>${project.version}</version>
 			<scope>provided</scope>
 		</dependency>
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-clients_${scala.binary.version}</artifactId>
+			<artifactId>flink-clients</artifactId>
 			<version>${project.version}</version>
 			<scope>provided</scope>
 		</dependency>
@@ -57,7 +63,12 @@ under the License.
 		<dependency>
 			<groupId>com.ververica</groupId>
 			<artifactId>frocksdbjni</artifactId>
-			<version>6.20.3-ververica-1.0</version>
+			<version>8.10.0-ververica-beta-1.0</version>
+		</dependency>
+
+		<dependency>
+			<groupId>org.apache.flink</groupId>
+			<artifactId>flink-shaded-guava</artifactId>
 		</dependency>
 
 		<!-- test dependencies -->
@@ -69,7 +80,7 @@ under the License.
 
 		<dependency>
 			<groupId>org.apache.flink</groupId>
-			<artifactId>flink-streaming-java_${scala.binary.version}</artifactId>
+			<artifactId>flink-streaming-java</artifactId>
 			<version>${project.version}</version>
 			<type>test-jar</type>
 			<scope>test</scope>
@@ -96,9 +107,18 @@ under the License.
 						</goals>
 						<configuration>
 							<includes>
-								<include>**/org/apache/flink/contrib/streaming/state/RocksDBTestUtils*</include>
-								<include>**/org/apache/flink/contrib/streaming/state/EmbeddedRocksDBStateBackendTest*</include>
-								<include>**/org/apache/flink/contrib/streaming/state/benchmark/StateBackendBenchmarkUtils*</include>
+								<include>
+									**/org/apache/flink/contrib/streaming/state/RocksDBTestUtils*
+								</include>
+								<include>
+									**/org/apache/flink/contrib/streaming/state/EmbeddedRocksDBStateBackendTest*
+								</include>
+								<!-- Exporting RocksDBStateBackendConfigTest$TestOptionsFactory for pyflink tests -->
+								<include>
+									**/org/apache/flink/contrib/streaming/state/RocksDBStateBackendConfigTest*
+								</include>
+								<include>**/org/apache/flink/contrib/streaming/state/benchmark/*
+								</include>
 								<include>META-INF/LICENSE</include>
 								<include>META-INF/NOTICE</include>
 							</includes>

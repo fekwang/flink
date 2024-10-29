@@ -15,15 +15,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.batch.sql
 
-/**
-  * Test for file system table factory with testcsv format.
-  */
+import org.apache.flink.core.fs.Path
+import org.apache.flink.testutils.TestFileSystem
+import org.apache.flink.testutils.junit.extensions.parameterized.NoOpTestExtension
+
+import org.assertj.core.api.Assertions
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.extension.ExtendWith
+
+/** Test for file system table factory with testcsv format. */
+@ExtendWith(Array(classOf[NoOpTestExtension]))
 class FileSystemTestCsvITCase extends BatchFileSystemITCaseBase {
 
   override def formatProperties(): Array[String] = {
     super.formatProperties() ++ Seq("'format' = 'testcsv'")
+  }
+
+  override def getScheme: String = "test"
+
+  @AfterEach
+  def close(): Unit = {
+    val path = new Path(resultPath)
+    if (TestFileSystem.getNumberOfUnclosedOutputStream(path) != 0) {
+      Assertions.fail(s"File $resultPath is not closed");
+    }
   }
 }

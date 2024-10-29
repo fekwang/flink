@@ -21,6 +21,7 @@ package org.apache.flink.table.api;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.table.catalog.ResolvedSchema;
+import org.apache.flink.table.legacy.api.TableSchema;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.CloseableIterator;
 
@@ -178,7 +179,7 @@ public interface TableResult {
      *
      * <p>This method has slightly different behaviors under different checkpointing settings (to
      * enable checkpointing for a streaming job, set checkpointing properties through {@link
-     * TableConfig#getConfiguration()}).
+     * TableConfig}).
      *
      * <ul>
      *   <li>For batch jobs or streaming jobs without checkpointing, this method has neither
@@ -205,7 +206,7 @@ public interface TableResult {
      *
      * <p>This method has slightly different behaviors under different checkpointing settings (to
      * enable checkpointing for a streaming job, set checkpointing properties through {@link
-     * TableConfig#getConfiguration()}).
+     * TableConfig}).
      *
      * <ul>
      *   <li>For batch jobs or streaming jobs without checkpointing, this method has neither

@@ -50,8 +50,6 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.hasRoot;
-
 /**
  * Schema of a table or view.
  *
@@ -159,6 +157,7 @@ public final class Schema {
     // --------------------------------------------------------------------------------------------
 
     /** A builder for constructing an immutable but still unresolved {@link Schema}. */
+    @PublicEvolving
     public static final class Builder {
 
         private final List<UnresolvedColumn> columns;
@@ -196,7 +195,7 @@ public final class Schema {
         public Builder fromRowDataType(DataType dataType) {
             Preconditions.checkNotNull(dataType, "Data type must not be null.");
             Preconditions.checkArgument(
-                    hasRoot(dataType.getLogicalType(), LogicalTypeRoot.ROW),
+                    dataType.getLogicalType().is(LogicalTypeRoot.ROW),
                     "Data type of ROW expected.");
             final List<DataType> fieldDataTypes = dataType.getChildren();
             final List<String> fieldNames = ((RowType) dataType.getLogicalType()).getFieldNames();
@@ -646,6 +645,7 @@ public final class Schema {
     // --------------------------------------------------------------------------------------------
 
     /** Super class for all kinds of columns in an unresolved schema. */
+    @PublicEvolving
     public abstract static class UnresolvedColumn {
         final String columnName;
         final @Nullable String comment;
@@ -692,19 +692,22 @@ public final class Schema {
      * Declaration of a physical column that will be resolved to {@link PhysicalColumn} during
      * schema resolution.
      */
+    @PublicEvolving
     public static final class UnresolvedPhysicalColumn extends UnresolvedColumn {
 
         private final AbstractDataType<?> dataType;
 
-        UnresolvedPhysicalColumn(String columnName, AbstractDataType<?> dataType) {
+        public UnresolvedPhysicalColumn(String columnName, AbstractDataType<?> dataType) {
             this(columnName, dataType, null);
         }
 
-        UnresolvedPhysicalColumn(String columnName, AbstractDataType<?> dataType, String comment) {
+        public UnresolvedPhysicalColumn(
+                String columnName, AbstractDataType<?> dataType, @Nullable String comment) {
             super(columnName, comment);
             this.dataType = dataType;
         }
 
+        @Override
         UnresolvedPhysicalColumn withComment(String comment) {
             return new UnresolvedPhysicalColumn(columnName, dataType, comment);
         }
@@ -752,19 +755,21 @@ public final class Schema {
      * Declaration of a computed column that will be resolved to {@link ComputedColumn} during
      * schema resolution.
      */
+    @PublicEvolving
     public static final class UnresolvedComputedColumn extends UnresolvedColumn {
 
         private final Expression expression;
 
-        UnresolvedComputedColumn(String columnName, Expression expression) {
+        public UnresolvedComputedColumn(String columnName, Expression expression) {
             this(columnName, expression, null);
         }
 
-        UnresolvedComputedColumn(String columnName, Expression expression, String comment) {
+        public UnresolvedComputedColumn(String columnName, Expression expression, String comment) {
             super(columnName, comment);
             this.expression = expression;
         }
 
+        @Override
         public UnresolvedComputedColumn withComment(String comment) {
             return new UnresolvedComputedColumn(columnName, expression, comment);
         }
@@ -812,13 +817,14 @@ public final class Schema {
      * Declaration of a metadata column that will be resolved to {@link MetadataColumn} during
      * schema resolution.
      */
+    @PublicEvolving
     public static final class UnresolvedMetadataColumn extends UnresolvedColumn {
 
         private final AbstractDataType<?> dataType;
         private final @Nullable String metadataKey;
         private final boolean isVirtual;
 
-        UnresolvedMetadataColumn(
+        public UnresolvedMetadataColumn(
                 String columnName,
                 AbstractDataType<?> dataType,
                 @Nullable String metadataKey,
@@ -826,18 +832,19 @@ public final class Schema {
             this(columnName, dataType, metadataKey, isVirtual, null);
         }
 
-        UnresolvedMetadataColumn(
+        public UnresolvedMetadataColumn(
                 String columnName,
                 AbstractDataType<?> dataType,
                 @Nullable String metadataKey,
                 boolean isVirtual,
-                String comment) {
+                @Nullable String comment) {
             super(columnName, comment);
             this.dataType = dataType;
             this.metadataKey = metadataKey;
             this.isVirtual = isVirtual;
         }
 
+        @Override
         UnresolvedMetadataColumn withComment(@Nullable String comment) {
             return new UnresolvedMetadataColumn(
                     columnName, dataType, metadataKey, isVirtual, comment);
@@ -905,12 +912,13 @@ public final class Schema {
      * Declaration of a watermark strategy that will be resolved to {@link WatermarkSpec} during
      * schema resolution.
      */
+    @PublicEvolving
     public static final class UnresolvedWatermarkSpec {
 
         private final String columnName;
         private final Expression watermarkExpression;
 
-        UnresolvedWatermarkSpec(String columnName, Expression watermarkExpression) {
+        public UnresolvedWatermarkSpec(String columnName, Expression watermarkExpression) {
             this.columnName = columnName;
             this.watermarkExpression = watermarkExpression;
         }
@@ -951,6 +959,7 @@ public final class Schema {
     }
 
     /** Super class for all kinds of constraints in an unresolved schema. */
+    @PublicEvolving
     public abstract static class UnresolvedConstraint {
 
         private final String constraintName;
@@ -990,11 +999,12 @@ public final class Schema {
      * Declaration of a primary key that will be resolved to {@link UniqueConstraint} during schema
      * resolution.
      */
+    @PublicEvolving
     public static final class UnresolvedPrimaryKey extends UnresolvedConstraint {
 
         private final List<String> columnNames;
 
-        UnresolvedPrimaryKey(String constraintName, List<String> columnNames) {
+        public UnresolvedPrimaryKey(String constraintName, List<String> columnNames) {
             super(constraintName);
             this.columnNames = columnNames;
         }

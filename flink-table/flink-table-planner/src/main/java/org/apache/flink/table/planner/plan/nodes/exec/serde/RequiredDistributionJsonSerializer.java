@@ -18,9 +18,11 @@
 
 package org.apache.flink.table.planner.plan.nodes.exec.serde;
 
+import org.apache.flink.annotation.Internal;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty.DistributionType;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty.HashDistribution;
+import org.apache.flink.table.planner.plan.nodes.exec.InputProperty.KeepInputAsIsDistribution;
 import org.apache.flink.table.planner.plan.nodes.exec.InputProperty.RequiredDistribution;
 
 import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.core.JsonGenerator;
@@ -29,11 +31,16 @@ import org.apache.flink.shaded.jackson2.com.fasterxml.jackson.databind.ser.std.S
 
 import java.io.IOException;
 
-/** JSON serializer for {@link RequiredDistribution}. */
-public class RequiredDistributionJsonSerializer extends StdSerializer<RequiredDistribution> {
+/**
+ * JSON serializer for {@link RequiredDistribution}.
+ *
+ * @see RequiredDistributionJsonDeserializer for the reverse operation
+ */
+@Internal
+final class RequiredDistributionJsonSerializer extends StdSerializer<RequiredDistribution> {
     private static final long serialVersionUID = 1L;
 
-    public RequiredDistributionJsonSerializer() {
+    RequiredDistributionJsonSerializer() {
         super(RequiredDistribution.class);
     }
 
@@ -52,6 +59,15 @@ public class RequiredDistributionJsonSerializer extends StdSerializer<RequiredDi
             case BROADCAST:
             case UNKNOWN:
                 // do nothing, type name is enough
+                break;
+            case KEEP_INPUT_AS_IS:
+                KeepInputAsIsDistribution asisDistribution =
+                        (KeepInputAsIsDistribution) requiredDistribution;
+                jsonGenerator.writeFieldName("inputDistribution");
+                serialize(
+                        asisDistribution.getInputDistribution(), jsonGenerator, serializerProvider);
+                jsonGenerator.writeFieldName("isStrict");
+                jsonGenerator.writeBoolean(asisDistribution.isStrict());
                 break;
             case HASH:
                 HashDistribution hashDistribution = (HashDistribution) requiredDistribution;

@@ -414,8 +414,9 @@ FlinkLogicalCalc(select=[f0 AS EXPR$0, +(c, 1) AS EXPR$1])
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(f0=[pyFunc5($3._1).f0], f1=[pyFunc5($3._1).f1])
-+- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
+LogicalProject(f0=[$0.f0], f1=[$0.f1])
++- LogicalProject(e=[pyFunc5($3._1)])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
 ]]>
     </Resource>
     <Resource name="optimized rel plan">
@@ -426,26 +427,6 @@ FlinkLogicalCalc(select=[f0.f0 AS f0, f0.f1 AS f1])
       +- FlinkLogicalLegacyTableSourceScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]], fields=[a, b, c, d])
 ]]>
     </Resource>
-  </TestCase>
-  <TestCase name="testPythonFunctionWithCompositeWhereClause">
-	<Resource name="sql">
-	  <![CDATA[SELECT a + 1 FROM MyTable where RowJavaFunc(pyFunc5(a).f0).f0 is NULL and b > 0]]>
-	</Resource>
-	<Resource name="ast">
-	  <![CDATA[
-LogicalProject(EXPR$0=[+($0, 1)])
-+- LogicalFilter(condition=[AND(IS NULL(RowJavaFunc(pyFunc5($0).f0).f0), >($1, 0))])
-   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
-]]>
-	</Resource>
-	<Resource name="optimized rel plan">
-	  <![CDATA[
-FlinkLogicalCalc(select=[+(a, 1) AS EXPR$0], where=[AND(IS NULL(f0.f0), >(b, 0))])
-+- FlinkLogicalCalc(select=[a, b, RowJavaFunc(f0.f0) AS f0])
-   +- FlinkLogicalCalc(select=[a, b, pyFunc5(a) AS f0])
-      +- FlinkLogicalLegacyTableSourceScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]], fields=[a, b, c, d])
-]]>
-	</Resource>
   </TestCase>
   <TestCase name="testPythonFunctionWithCompositeInputsAndWhereClause">
     <Resource name="sql">
@@ -466,14 +447,35 @@ FlinkLogicalCalc(select=[a, pyFunc1(b, f0) AS EXPR$1])
 ]]>
     </Resource>
   </TestCase>
+  <TestCase name="testPythonFunctionWithCompositeWhereClause">
+    <Resource name="sql">
+      <![CDATA[SELECT a + 1 FROM MyTable where RowJavaFunc(pyFunc5(a).f0).f0 is NULL and b > 0]]>
+    </Resource>
+    <Resource name="ast">
+      <![CDATA[
+LogicalProject(EXPR$0=[+($0, 1)])
++- LogicalFilter(condition=[AND(IS NULL(RowJavaFunc(pyFunc5($0).f0).f0), >($1, 0))])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
+]]>
+    </Resource>
+    <Resource name="optimized rel plan">
+      <![CDATA[
+FlinkLogicalCalc(select=[+(a, 1) AS EXPR$0], where=[AND(IS NULL(f0.f0), >(b, 0))])
++- FlinkLogicalCalc(select=[a, b, RowJavaFunc(f0.f0) AS f0])
+   +- FlinkLogicalCalc(select=[a, b, pyFunc5(a) AS f0])
+      +- FlinkLogicalLegacyTableSourceScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]], fields=[a, b, c, d])
+]]>
+    </Resource>
+  </TestCase>
   <TestCase name="testPythonFunctionWithCompositeOutputs">
     <Resource name="sql">
       <![CDATA[SELECT e.* FROM (SELECT pyFunc5(a) as e FROM MyTable) AS T]]>
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(f0=[pyFunc5($0).f0], f1=[pyFunc5($0).f1])
-+- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
+LogicalProject(f0=[$0.f0], f1=[$0.f1])
++- LogicalProject(e=[pyFunc5($0)])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
 ]]>
     </Resource>
     <Resource name="optimized rel plan">
@@ -490,8 +492,9 @@ FlinkLogicalCalc(select=[f0.f0 AS f0, f0.f1 AS f1])
     </Resource>
     <Resource name="ast">
       <![CDATA[
-LogicalProject(f0=[pyFunc5($0).f0], f1=[pyFunc5($0).f1], f00=[pyFunc5($1).f0], f10=[pyFunc5($1).f1])
-+- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
+LogicalProject(f0=[$0.f0], f1=[$0.f1], f00=[$1.f0], f10=[$1.f1])
++- LogicalProject(e=[pyFunc5($0)], f=[pyFunc5($1)])
+   +- LogicalTableScan(table=[[default_catalog, default_database, MyTable, source: [TestTableSource(a, b, c, d)]]])
 ]]>
     </Resource>
     <Resource name="optimized rel plan">

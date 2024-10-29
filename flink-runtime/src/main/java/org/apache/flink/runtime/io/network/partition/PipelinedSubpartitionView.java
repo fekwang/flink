@@ -52,7 +52,7 @@ public class PipelinedSubpartitionView implements ResultSubpartitionView {
 
     @Override
     public void notifyDataAvailable() {
-        availabilityListener.notifyDataAvailable();
+        availabilityListener.notifyDataAvailable(this);
     }
 
     @Override
@@ -85,13 +85,17 @@ public class PipelinedSubpartitionView implements ResultSubpartitionView {
     }
 
     @Override
-    public AvailabilityWithBacklog getAvailabilityAndBacklog(int numCreditsAvailable) {
-        return parent.getAvailabilityAndBacklog(numCreditsAvailable);
+    public AvailabilityWithBacklog getAvailabilityAndBacklog(boolean isCreditAvailable) {
+        return parent.getAvailabilityAndBacklog(isCreditAvailable);
     }
 
     @Override
     public Throwable getFailureCause() {
-        return parent.getFailureCause();
+        Throwable cause = parent.getFailureCause();
+        if (cause != null) {
+            return new ProducerFailedException(cause);
+        }
+        return null;
     }
 
     @Override
@@ -107,6 +111,11 @@ public class PipelinedSubpartitionView implements ResultSubpartitionView {
     @Override
     public void notifyNewBufferSize(int newBufferSize) {
         parent.bufferSize(newBufferSize);
+    }
+
+    @Override
+    public int peekNextBufferSubpartitionId() {
+        throw new UnsupportedOperationException();
     }
 
     @Override

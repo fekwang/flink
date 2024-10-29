@@ -23,6 +23,14 @@ package org.apache.flink.runtime.scheduler;
  * change during runtime.
  */
 public interface VertexParallelismInformation {
+
+    /**
+     * Returns a vertex's min parallelism.
+     *
+     * @return the min parallelism for the vertex
+     */
+    int getMinParallelism();
+
     /**
      * Returns a vertex's parallelism.
      *
@@ -36,6 +44,14 @@ public interface VertexParallelismInformation {
      * @return the max parallelism for the vertex
      */
     int getMaxParallelism();
+
+    /**
+     * Set a given vertex's parallelism property. The parallelism can be changed only if the vertex
+     * parallelism was not decided yet (i.e. was -1).
+     *
+     * @param parallelism the parallelism for the vertex
+     */
+    void setParallelism(int parallelism);
 
     /**
      * Changes a given vertex's max parallelism property. The caller should first check the validity

@@ -19,6 +19,7 @@
 package org.apache.flink.table.planner.plan.rules.physical.stream;
 
 import org.apache.flink.table.api.TableConfig;
+import org.apache.flink.table.api.config.AggregatePhaseStrategy;
 import org.apache.flink.table.planner.plan.logical.SessionWindowSpec;
 import org.apache.flink.table.planner.plan.logical.SliceAttachedWindowingStrategy;
 import org.apache.flink.table.planner.plan.logical.TimeAttributeWindowingStrategy;
@@ -32,10 +33,7 @@ import org.apache.flink.table.planner.plan.nodes.physical.stream.StreamPhysicalW
 import org.apache.flink.table.planner.plan.rules.physical.FlinkExpandConversionRule;
 import org.apache.flink.table.planner.plan.trait.FlinkRelDistribution;
 import org.apache.flink.table.planner.plan.trait.FlinkRelDistributionTraitDef;
-import org.apache.flink.table.planner.plan.trait.ModifyKindSetTrait;
-import org.apache.flink.table.planner.plan.trait.UpdateKindTrait;
 import org.apache.flink.table.planner.plan.utils.AggregateUtil;
-import org.apache.flink.table.planner.utils.AggregatePhaseStrategy;
 
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
@@ -116,11 +114,7 @@ public class TwoStageOptimizedWindowAggregateRule extends RelOptRule {
         final RelNode realInput = call.rel(2);
         final WindowingStrategy windowing = windowAgg.windowing();
 
-        RelTraitSet localTraitSet =
-                realInput
-                        .getTraitSet()
-                        .plus(ModifyKindSetTrait.INSERT_ONLY())
-                        .plus(UpdateKindTrait.NONE());
+        RelTraitSet localTraitSet = realInput.getTraitSet();
         StreamPhysicalLocalWindowAggregate localAgg =
                 new StreamPhysicalLocalWindowAggregate(
                         windowAgg.getCluster(),

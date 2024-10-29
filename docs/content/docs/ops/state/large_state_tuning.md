@@ -57,7 +57,7 @@ up checkpoints are:
 
   - The alignment duration, which is defined as the time between receiving first and the last checkpoint barrier.
     During unaligned `exactly-once` checkpoints and `at-least-once` checkpoints subtasks are processing all of the
-    data from the upstream subtasks without any interruptions. However with aligned `exatcly-once` checkpoints,
+    data from the upstream subtasks without any interruptions. However with aligned `exactly-once` checkpoints,
     the channels that have already received a checkpoint barrier are blocked from sending further data until
     all of the remaining channels catch up and receive theirs checkpoint barriers (alignment time).
 
@@ -203,7 +203,7 @@ executing the program with a low parallelism.
 ## Compression
 
 Flink offers optional compression (default: off) for all checkpoints and savepoints. Currently, compression always uses 
-the [snappy compression algorithm (version 1.1.4)](https://github.com/xerial/snappy-java) but we are planning to support
+the [snappy compression algorithm (version 1.1.10.x)](https://github.com/xerial/snappy-java) but we are planning to support
 custom compression algorithms in the future. Compression works on the granularity of key-groups in keyed state, i.e.
 each key-group can be decompressed individually, which is important for rescaling. 
 

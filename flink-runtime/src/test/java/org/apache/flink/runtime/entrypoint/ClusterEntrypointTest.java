@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.entrypoint;
 
+import org.apache.flink.configuration.ClusterOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.JobManagerOptions;
@@ -34,8 +35,8 @@ import org.apache.flink.runtime.entrypoint.component.DefaultDispatcherResourceMa
 import org.apache.flink.runtime.entrypoint.component.DispatcherResourceManagerComponentFactory;
 import org.apache.flink.runtime.highavailability.HighAvailabilityServices;
 import org.apache.flink.runtime.highavailability.TestingHighAvailabilityServicesBuilder;
-import org.apache.flink.runtime.jobmanager.JobGraphStoreFactory;
-import org.apache.flink.runtime.leaderelection.LeaderElectionService;
+import org.apache.flink.runtime.jobmanager.JobPersistenceComponentFactory;
+import org.apache.flink.runtime.leaderelection.LeaderElection;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerFactory;
 import org.apache.flink.runtime.resourcemanager.StandaloneResourceManagerFactory;
 import org.apache.flink.runtime.resourcemanager.TestingResourceManagerFactory;
@@ -43,6 +44,8 @@ import org.apache.flink.runtime.rest.SessionRestEndpointFactory;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
 import org.apache.flink.runtime.rpc.RpcSystemUtils;
+import org.apache.flink.runtime.security.token.ExceptionThrowingDelegationTokenProvider;
+import org.apache.flink.runtime.security.token.ExceptionThrowingDelegationTokenReceiver;
 import org.apache.flink.runtime.testutils.TestJvmProcess;
 import org.apache.flink.runtime.testutils.TestingClusterEntrypointProcess;
 import org.apache.flink.runtime.util.SignalHandler;
@@ -52,6 +55,7 @@ import org.apache.flink.util.TestLogger;
 import org.apache.flink.util.concurrent.FutureUtils;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
@@ -67,6 +71,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
@@ -87,6 +92,14 @@ public class ClusterEntrypointTest extends TestLogger {
     @Before
     public void before() {
         flinkConfig = new Configuration();
+        ExceptionThrowingDelegationTokenProvider.reset();
+        ExceptionThrowingDelegationTokenReceiver.reset();
+    }
+
+    @After
+    public void after() {
+        ExceptionThrowingDelegationTokenProvider.reset();
+        ExceptionThrowingDelegationTokenReceiver.reset();
     }
 
     @Test(expected = IllegalConfigurationException.class)
@@ -97,13 +110,35 @@ public class ClusterEntrypointTest extends TestLogger {
     }
 
     @Test
+    public void testClusterStartShouldObtainTokens() throws Exception {
+        ExceptionThrowingDelegationTokenProvider.addToken.set(true);
+        final HighAvailabilityServices testingHaService =
+                new TestingHighAvailabilityServicesBuilder().build();
+        final TestingEntryPoint testingEntryPoint =
+                new TestingEntryPoint.Builder()
+                        .setConfiguration(flinkConfig)
+                        .setHighAvailabilityServices(testingHaService)
+                        .build();
+
+        final CompletableFuture<ApplicationStatus> appStatusFuture =
+                startClusterEntrypoint(testingEntryPoint);
+
+        testingEntryPoint.closeAsync();
+        assertThat(
+                appStatusFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS),
+                is(ApplicationStatus.UNKNOWN));
+        assertThat(
+                ExceptionThrowingDelegationTokenReceiver.onNewTokensObtainedCallCount.get(), is(1));
+    }
+
+    @Test
     public void testCloseAsyncShouldNotCleanUpHAData() throws Exception {
         final CompletableFuture<Void> closeFuture = new CompletableFuture<>();
-        final CompletableFuture<Void> closeAndCleanupAllDataFuture = new CompletableFuture<>();
+        final CompletableFuture<Void> cleanupAllDataFuture = new CompletableFuture<>();
         final HighAvailabilityServices testingHaService =
                 new TestingHighAvailabilityServicesBuilder()
                         .setCloseFuture(closeFuture)
-                        .setCloseAndCleanupAllDataFuture(closeAndCleanupAllDataFuture)
+                        .setCleanupAllDataFuture(cleanupAllDataFuture)
                         .build();
         final TestingEntryPoint testingEntryPoint =
                 new TestingEntryPoint.Builder()
@@ -119,7 +154,7 @@ public class ClusterEntrypointTest extends TestLogger {
                 appStatusFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS),
                 is(ApplicationStatus.UNKNOWN));
         assertThat(closeFuture.isDone(), is(true));
-        assertThat(closeAndCleanupAllDataFuture.isDone(), is(false));
+        assertThat(cleanupAllDataFuture.isDone(), is(false));
     }
 
     @Test
@@ -149,13 +184,13 @@ public class ClusterEntrypointTest extends TestLogger {
     @Test
     public void testClusterFinishedNormallyShouldDeregisterAppAndCleanupHAData() throws Exception {
         final CompletableFuture<Void> deregisterFuture = new CompletableFuture<>();
-        final CompletableFuture<Void> closeAndCleanupAllDataFuture = new CompletableFuture<>();
+        final CompletableFuture<Void> cleanupAllDataFuture = new CompletableFuture<>();
         final CompletableFuture<ApplicationStatus> dispatcherShutDownFuture =
                 new CompletableFuture<>();
 
         final HighAvailabilityServices testingHaService =
                 new TestingHighAvailabilityServicesBuilder()
-                        .setCloseAndCleanupAllDataFuture(closeAndCleanupAllDataFuture)
+                        .setCleanupAllDataFuture(cleanupAllDataFuture)
                         .build();
         final TestingResourceManagerFactory testingResourceManagerFactory =
                 new TestingResourceManagerFactory.Builder()
@@ -186,7 +221,7 @@ public class ClusterEntrypointTest extends TestLogger {
                 appStatusFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS),
                 is(ApplicationStatus.SUCCEEDED));
         assertThat(deregisterFuture.isDone(), is(true));
-        assertThat(closeAndCleanupAllDataFuture.isDone(), is(true));
+        assertThat(cleanupAllDataFuture.isDone(), is(true));
     }
 
     @Test
@@ -228,6 +263,83 @@ public class ClusterEntrypointTest extends TestLogger {
 
             clusterEntrypointProcess.destroy();
         }
+    }
+
+    @Test
+    public void testWorkingDirectoryIsSetupWhenStartingTheClusterEntrypoint() throws Exception {
+        final File workingDirBase = TEMPORARY_FOLDER.newFolder();
+        final ResourceID resourceId = new ResourceID("foobar");
+
+        configureWorkingDirectory(flinkConfig, workingDirBase, resourceId);
+
+        final File workingDir =
+                ClusterEntrypointUtils.generateJobManagerWorkingDirectoryFile(
+                        flinkConfig, resourceId);
+
+        try (final TestingEntryPoint testingEntryPoint =
+                new TestingEntryPoint.Builder().setConfiguration(flinkConfig).build()) {
+            testingEntryPoint.startCluster();
+            assertTrue(workingDir.exists());
+        }
+    }
+
+    private static void configureWorkingDirectory(
+            Configuration configuration, File workingDirBase, ResourceID resourceId) {
+        configuration.set(
+                ClusterOptions.PROCESS_WORKING_DIR_BASE, workingDirBase.getAbsolutePath());
+        configuration.set(JobManagerOptions.JOB_MANAGER_RESOURCE_ID, resourceId.toString());
+    }
+
+    @Test
+    public void testWorkingDirectoryIsNotDeletedWhenStoppingClusterEntrypoint() throws Exception {
+        final File workingDirBase = TEMPORARY_FOLDER.newFolder();
+        final ResourceID resourceId = new ResourceID("foobar");
+
+        configureWorkingDirectory(flinkConfig, workingDirBase, resourceId);
+
+        final File workingDir =
+                ClusterEntrypointUtils.generateJobManagerWorkingDirectoryFile(
+                        flinkConfig, resourceId);
+
+        try (final TestingEntryPoint testingEntryPoint =
+                new TestingEntryPoint.Builder().setConfiguration(flinkConfig).build()) {
+            testingEntryPoint.startCluster();
+        }
+
+        assertTrue(
+                "The working directory has been deleted when the cluster entrypoint shut down. This should not happen.",
+                workingDir.exists());
+    }
+
+    @Test
+    public void testWorkingDirectoryIsDeletedIfApplicationCompletes() throws Exception {
+        final File workingDirBase = TEMPORARY_FOLDER.newFolder();
+        final ResourceID resourceId = new ResourceID("foobar");
+
+        configureWorkingDirectory(flinkConfig, workingDirBase, resourceId);
+
+        final File workingDir =
+                ClusterEntrypointUtils.generateJobManagerWorkingDirectoryFile(
+                        flinkConfig, resourceId);
+
+        final CompletableFuture<ApplicationStatus> shutDownFuture = new CompletableFuture<>();
+
+        final TestingEntryPoint testingEntryPoint =
+                new TestingEntryPoint.Builder()
+                        .setConfiguration(flinkConfig)
+                        .setDispatcherRunnerFactory(
+                                new TestingDispatcherRunnerFactory.Builder()
+                                        .setShutDownFuture(shutDownFuture)
+                                        .build())
+                        .build();
+        testingEntryPoint.startCluster();
+
+        shutDownFuture.complete(ApplicationStatus.SUCCEEDED);
+        testingEntryPoint.getTerminationFuture().join();
+
+        assertFalse(
+                "The working directory has not been deleted when the application completed successfully.",
+                workingDir.exists());
     }
 
     private CompletableFuture<ApplicationStatus> startClusterEntrypoint(
@@ -337,9 +449,9 @@ public class ClusterEntrypointTest extends TestLogger {
 
         @Override
         public DispatcherRunner createDispatcherRunner(
-                LeaderElectionService leaderElectionService,
+                LeaderElection leaderElection,
                 FatalErrorHandler fatalErrorHandler,
-                JobGraphStoreFactory jobGraphStoreFactory,
+                JobPersistenceComponentFactory jobPersistenceComponentFactory,
                 Executor ioExecutor,
                 RpcService rpcService,
                 PartialDispatcherServices partialDispatcherServices)

@@ -20,6 +20,8 @@ package org.apache.flink.runtime.metrics.groups;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.api.common.eventtime.TimestampAssigner;
+import org.apache.flink.api.common.eventtime.Watermark;
 import org.apache.flink.metrics.Counter;
 import org.apache.flink.metrics.Gauge;
 import org.apache.flink.metrics.MetricGroup;
@@ -35,17 +37,19 @@ import org.apache.flink.util.clock.SystemClock;
 @Internal
 public class InternalSourceReaderMetricGroup extends ProxyMetricGroup<MetricGroup>
         implements SourceReaderMetricGroup {
-
-    public static final long ACTIVE = Long.MAX_VALUE;
+    public static final long UNDEFINED = -1L;
+    private static final long ACTIVE = Long.MAX_VALUE;
+    private static final long MAX_WATERMARK_TIMESTAMP = Watermark.MAX_WATERMARK.getTimestamp();
 
     private final OperatorIOMetricGroup operatorIOMetricGroup;
-    private final Clock clock;
     private final Counter numRecordsInErrors;
-    private boolean watermarkLagRegistered;
-    private boolean eventTimeLagRegistered;
+    private final Clock clock;
     private long lastWatermark;
-    private long lastEventTime;
+    private long lastEventTime = TimestampAssigner.NO_TIMESTAMP;
     private long idleStartTime = ACTIVE;
+    private boolean firstWatermark = true;
+    private long currentMaxDesiredWatermark;
+    private boolean firstDesiredWatermark = true;
 
     private InternalSourceReaderMetricGroup(
             MetricGroup parentMetricGroup,
@@ -55,9 +59,8 @@ public class InternalSourceReaderMetricGroup extends ProxyMetricGroup<MetricGrou
         numRecordsInErrors = parentMetricGroup.counter(MetricNames.NUM_RECORDS_IN_ERRORS);
         this.operatorIOMetricGroup = operatorIOMetricGroup;
         this.clock = clock;
-        parentMetricGroup.gauge(
-                MetricNames.SOURCE_IDLE_TIME,
-                () -> isIdling() ? this.clock.absoluteTimeMillis() - idleStartTime : 0);
+        parentMetricGroup.gauge(MetricNames.SOURCE_IDLE_TIME, this::getIdleTime);
+        parentMetricGroup.gauge(MetricNames.CURRENT_EMIT_EVENT_TIME_LAG, this::getEmitTimeLag);
     }
 
     public static InternalSourceReaderMetricGroup wrap(OperatorMetricGroup operatorMetricGroup) {
@@ -75,52 +78,9 @@ public class InternalSourceReaderMetricGroup extends ProxyMetricGroup<MetricGrou
                 SystemClock.getInstance());
     }
 
-    private boolean isIdling() {
-        return idleStartTime != ACTIVE;
-    }
-
-    public void idlingStarted() {
-        if (!isIdling()) {
-            idleStartTime = clock.absoluteTimeMillis();
-        }
-    }
-
-    public void recordEmitted() {
-        idleStartTime = ACTIVE;
-    }
-
     @Override
     public Counter getNumRecordsInErrorsCounter() {
         return numRecordsInErrors;
-    }
-
-    public void watermarkEmitted(long watermark) {
-        lastWatermark = watermark;
-        // iff a respective source emits a watermark, Flink can provide the watermark lag
-        if (!watermarkLagRegistered) {
-            parentMetricGroup.gauge(
-                    MetricNames.WATERMARK_LAG, () -> clock.absoluteTimeMillis() - lastWatermark);
-            watermarkLagRegistered = true;
-        }
-    }
-
-    public void eventTimeEmitted(long timestamp) {
-        lastEventTime = timestamp;
-        // iff a respective source emits a timestamp, Flink can provide the event lag
-        if (!eventTimeLagRegistered) {
-            parentMetricGroup.gauge(
-                    MetricNames.CURRENT_EMIT_EVENT_TIME_LAG,
-                    () -> getLastEmitTime() - lastEventTime);
-            eventTimeLagRegistered = true;
-        }
-    }
-
-    /**
-     * This is a rough approximation. If the source is busy, we assume that <code>emit time == now()
-     * </code>. If it's idling, we just take the time it started idling as the last emit time.
-     */
-    private long getLastEmitTime() {
-        return isIdling() ? idleStartTime : clock.absoluteTimeMillis();
     }
 
     @Override
@@ -136,5 +96,81 @@ public class InternalSourceReaderMetricGroup extends ProxyMetricGroup<MetricGrou
     @Override
     public OperatorIOMetricGroup getIOMetricGroup() {
         return operatorIOMetricGroup;
+    }
+
+    /**
+     * Called when a new record was emitted with the given timestamp. {@link
+     * TimestampAssigner#NO_TIMESTAMP} should be indicated that the record did not have a timestamp.
+     *
+     * <p>Note this function should be called before the actual record is emitted such that chained
+     * processing does not influence the statistics.
+     */
+    public void recordEmitted(long timestamp) {
+        idleStartTime = ACTIVE;
+        lastEventTime = timestamp;
+    }
+
+    public void idlingStarted() {
+        if (!isIdling()) {
+            idleStartTime = clock.absoluteTimeMillis();
+        }
+    }
+
+    /**
+     * Called when a watermark was emitted.
+     *
+     * <p>Note this function should be called before the actual watermark is emitted such that
+     * chained processing does not influence the statistics.
+     */
+    public void watermarkEmitted(long watermark) {
+        if (watermark == MAX_WATERMARK_TIMESTAMP) {
+            return;
+        }
+        lastWatermark = watermark;
+        if (firstWatermark) {
+            parentMetricGroup.gauge(MetricNames.WATERMARK_LAG, this::getWatermarkLag);
+            firstWatermark = false;
+        }
+    }
+
+    public void updateMaxDesiredWatermark(long currentMaxDesiredWatermark) {
+        this.currentMaxDesiredWatermark = currentMaxDesiredWatermark;
+
+        if (firstDesiredWatermark) {
+            parentMetricGroup.gauge(
+                    MetricNames.WATERMARK_ALIGNMENT_DRIFT, this::getAlignedWatermarkDrift);
+            firstDesiredWatermark = false;
+        }
+    }
+
+    boolean isIdling() {
+        return idleStartTime != ACTIVE;
+    }
+
+    long getIdleTime() {
+        return isIdling() ? this.clock.absoluteTimeMillis() - idleStartTime : 0;
+    }
+
+    /**
+     * This is a rough approximation. If the source is busy, we assume that <code>
+     * emit time == now()
+     * </code>. If it's idling, we just take the time it started idling as the last emit time.
+     */
+    private long getLastEmitTime() {
+        return isIdling() ? idleStartTime : clock.absoluteTimeMillis();
+    }
+
+    long getEmitTimeLag() {
+        return lastEventTime != TimestampAssigner.NO_TIMESTAMP
+                ? getLastEmitTime() - lastEventTime
+                : UNDEFINED;
+    }
+
+    long getWatermarkLag() {
+        return getLastEmitTime() - lastWatermark;
+    }
+
+    long getAlignedWatermarkDrift() {
+        return lastWatermark - currentMaxDesiredWatermark;
     }
 }

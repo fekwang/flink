@@ -216,20 +216,19 @@ public final class LinkedListSerializer<T> extends TypeSerializer<LinkedList<T>>
     public static class LinkedListSerializerSnapshot<T>
             extends CompositeTypeSerializerSnapshot<LinkedList<T>, LinkedListSerializer<T>> {
 
-        private static final int CURRENT_VERSION = 2;
+        private static final int CURRENT_VERSION = 3;
 
         private static final int FIRST_VERSION_WITH_NULL_MASK = 2;
 
-        private int readVersion = CURRENT_VERSION;
+        private boolean hasNullMask = true;
 
         /** Constructor for read instantiation. */
-        public LinkedListSerializerSnapshot() {
-            super(LinkedListSerializer.class);
-        }
+        public LinkedListSerializerSnapshot() {}
 
         /** Constructor to create the snapshot for writing. */
         public LinkedListSerializerSnapshot(LinkedListSerializer<T> listSerializer) {
             super(listSerializer);
+            this.hasNullMask = listSerializer.hasNullMask;
         }
 
         @Override
@@ -239,14 +238,32 @@ public final class LinkedListSerializer<T> extends TypeSerializer<LinkedList<T>>
 
         @Override
         protected void readOuterSnapshot(
-                int readOuterSnapshotVersion, DataInputView in, ClassLoader userCodeClassLoader) {
-            readVersion = readOuterSnapshotVersion;
+                int readOuterSnapshotVersion, DataInputView in, ClassLoader userCodeClassLoader)
+                throws IOException {
+            if (readOuterSnapshotVersion < FIRST_VERSION_WITH_NULL_MASK) {
+                hasNullMask = false;
+            } else if (readOuterSnapshotVersion == FIRST_VERSION_WITH_NULL_MASK) {
+                hasNullMask = true;
+            } else {
+                hasNullMask = in.readBoolean();
+            }
+        }
+
+        @Override
+        protected void writeOuterSnapshot(DataOutputView out) throws IOException {
+            out.writeBoolean(hasNullMask);
         }
 
         @Override
         protected OuterSchemaCompatibility resolveOuterSchemaCompatibility(
-                LinkedListSerializer<T> newSerializer) {
-            if (readVersion < FIRST_VERSION_WITH_NULL_MASK) {
+                TypeSerializerSnapshot<LinkedList<T>> oldSerializerSnapshot) {
+            if (!(oldSerializerSnapshot instanceof LinkedListSerializerSnapshot)) {
+                return OuterSchemaCompatibility.INCOMPATIBLE;
+            }
+
+            LinkedListSerializerSnapshot<T> oldLinkedListSerializerSnapshot =
+                    (LinkedListSerializerSnapshot<T>) oldSerializerSnapshot;
+            if (hasNullMask != oldLinkedListSerializerSnapshot.hasNullMask) {
                 return OuterSchemaCompatibility.COMPATIBLE_AFTER_MIGRATION;
             }
             return OuterSchemaCompatibility.COMPATIBLE_AS_IS;
@@ -257,8 +274,7 @@ public final class LinkedListSerializer<T> extends TypeSerializer<LinkedList<T>>
                 TypeSerializer<?>[] nestedSerializers) {
             @SuppressWarnings("unchecked")
             TypeSerializer<T> elementSerializer = (TypeSerializer<T>) nestedSerializers[0];
-            return new LinkedListSerializer<>(
-                    elementSerializer, readVersion >= FIRST_VERSION_WITH_NULL_MASK);
+            return new LinkedListSerializer<>(elementSerializer, hasNullMask);
         }
 
         @Override

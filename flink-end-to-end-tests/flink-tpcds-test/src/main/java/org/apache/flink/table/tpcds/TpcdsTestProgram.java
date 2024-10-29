@@ -18,14 +18,11 @@
 
 package org.apache.flink.table.tpcds;
 
-import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.core.fs.FileSystem;
-import org.apache.flink.streaming.api.graph.GlobalStreamExchangeMode;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
-import org.apache.flink.table.api.config.ExecutionConfigOptions;
 import org.apache.flink.table.api.config.OptimizerConfigOptions;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.catalog.ConnectorCatalogTable;
@@ -36,6 +33,7 @@ import org.apache.flink.table.tpcds.schema.TpcdsSchema;
 import org.apache.flink.table.tpcds.schema.TpcdsSchemaProvider;
 import org.apache.flink.table.tpcds.stats.TpcdsStatsProvider;
 import org.apache.flink.table.types.utils.TypeConversions;
+import org.apache.flink.util.ParameterTool;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -139,22 +137,10 @@ public class TpcdsTestProgram {
 
         // config Optimizer parameters
         tEnv.getConfig()
-                .getConfiguration()
-                .setInteger(ExecutionConfigOptions.TABLE_EXEC_RESOURCE_DEFAULT_PARALLELISM, 4);
-        // TODO use the default shuffle mode of batch runtime mode once FLINK-23470 is implemented
-        tEnv.getConfig()
-                .getConfiguration()
-                .setString(
-                        ExecutionConfigOptions.TABLE_EXEC_SHUFFLE_MODE,
-                        GlobalStreamExchangeMode.POINTWISE_EDGES_PIPELINED.toString());
-        tEnv.getConfig()
-                .getConfiguration()
-                .setLong(
+                .set(
                         OptimizerConfigOptions.TABLE_OPTIMIZER_BROADCAST_JOIN_THRESHOLD,
-                        10 * 1024 * 1024);
-        tEnv.getConfig()
-                .getConfiguration()
-                .setBoolean(OptimizerConfigOptions.TABLE_OPTIMIZER_JOIN_REORDER_ENABLED, true);
+                        10 * 1024 * 1024L);
+        tEnv.getConfig().set(OptimizerConfigOptions.TABLE_OPTIMIZER_JOIN_REORDER_ENABLED, true);
 
         // register TPC-DS tables
         TPCDS_TABLES.forEach(

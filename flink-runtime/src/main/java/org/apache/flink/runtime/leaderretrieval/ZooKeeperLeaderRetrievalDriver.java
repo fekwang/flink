@@ -25,12 +25,13 @@ import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.util.ZooKeeperUtils;
 import org.apache.flink.util.ExceptionUtils;
 
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.CuratorFramework;
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.api.UnhandledErrorListener;
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.recipes.cache.ChildData;
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.recipes.cache.TreeCache;
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.state.ConnectionState;
-import org.apache.flink.shaded.curator4.org.apache.curator.framework.state.ConnectionStateListener;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.CuratorFramework;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.recipes.cache.ChildData;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.recipes.cache.TreeCache;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.state.ConnectionState;
+import org.apache.flink.shaded.curator5.org.apache.curator.framework.state.ConnectionStateListener;
+import org.apache.flink.shaded.zookeeper3.org.apache.zookeeper.KeeperException;
+import org.apache.flink.shaded.zookeeper3.org.apache.zookeeper.Watcher;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +40,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ObjectInputStream;
 import java.util.UUID;
 
+import static org.apache.flink.runtime.util.ZooKeeperUtils.RESOURCE_MANAGER_NODE;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
 /**
@@ -47,8 +49,7 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  * {@link ZooKeeperLeaderElectionDriver}. The leader address as well as the current leader session
  * ID is retrieved from ZooKeeper.
  */
-public class ZooKeeperLeaderRetrievalDriver
-        implements LeaderRetrievalDriver, UnhandledErrorListener {
+public class ZooKeeperLeaderRetrievalDriver implements LeaderRetrievalDriver {
     private static final Logger LOG = LoggerFactory.getLogger(ZooKeeperLeaderRetrievalDriver.class);
 
     /** Connection to the used ZooKeeper quorum. */
@@ -99,10 +100,14 @@ public class ZooKeeperLeaderRetrievalDriver
         this.leaderInformationClearancePolicy = leaderInformationClearancePolicy;
         this.fatalErrorHandler = checkNotNull(fatalErrorHandler);
 
-        client.getUnhandledErrorListenable().addListener(this);
         cache.start();
 
         client.getConnectionStateListenable().addListener(connectionStateListener);
+
+        LOG.debug(
+                "Monitoring data change in {}",
+                ZooKeeperUtils.generateZookeeperPath(
+                        client.getNamespace(), connectionInformationPath));
 
         running = true;
     }
@@ -117,10 +122,22 @@ public class ZooKeeperLeaderRetrievalDriver
 
         LOG.info("Closing {}.", this);
 
-        client.getUnhandledErrorListenable().removeListener(this);
         client.getConnectionStateListenable().removeListener(connectionStateListener);
 
         cache.close();
+
+        try {
+            if (client.getZookeeperClient().isConnected()
+                    && !connectionInformationPath.contains(RESOURCE_MANAGER_NODE)) {
+                client.watchers()
+                        .removeAll()
+                        .ofType(Watcher.WatcherType.Any)
+                        .forPath(connectionInformationPath);
+            }
+        } catch (KeeperException.NoWatcherException e) {
+            // Ignore the no watcher exception as it's just a safetynet to fix watcher leak issue.
+            // For more details, please refer to FLINK-33053.
+        }
     }
 
     private void retrieveLeaderInformationFromZooKeeper() {
@@ -183,13 +200,6 @@ public class ZooKeeperLeaderRetrievalDriver
     private void onReconnectedConnectionState() {
         // check whether we find some new leader information in ZooKeeper
         retrieveLeaderInformationFromZooKeeper();
-    }
-
-    @Override
-    public void unhandledError(String s, Throwable throwable) {
-        fatalErrorHandler.onFatalError(
-                new LeaderRetrievalException(
-                        "Unhandled error in ZooKeeperLeaderRetrievalDriver:" + s, throwable));
     }
 
     @Override

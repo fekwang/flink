@@ -17,10 +17,14 @@
 
 package org.apache.flink.test.streaming.api.functions.source;
 
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.serialization.SimpleStringEncoder;
+import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.connector.file.sink.FileSink;
+import org.apache.flink.connector.file.src.FileSource;
+import org.apache.flink.connector.file.src.reader.TextLineInputFormat;
 import org.apache.flink.core.fs.Path;
-import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.filesystem.OutputFileConfig;
 import org.apache.flink.streaming.api.functions.sink.filesystem.rollingpolicies.DefaultRollingPolicy;
@@ -46,14 +50,22 @@ public class ContinuousFileReaderOperatorITCase {
         env.setParallelism(1);
         File input = temp.newFile("input");
         FileUtils.write(input, "test", StandardCharsets.UTF_8);
-        DataStream<String> stream = env.readTextFile(input.getAbsolutePath());
+
+        FileSource<String> source =
+                FileSource.forRecordStreamFormat(
+                                new TextLineInputFormat(), new Path(input.getAbsolutePath()))
+                        .build();
+        DataStreamSource<String> stream =
+                env.fromSource(source, WatermarkStrategy.noWatermarks(), "file-source");
         final FileSink<String> sink =
                 FileSink.forRowFormat(
                                 new Path(temp.newFolder("output").getAbsolutePath()),
                                 new SimpleStringEncoder<String>())
                         .withOutputFileConfig(OutputFileConfig.builder().build())
                         .withRollingPolicy(
-                                DefaultRollingPolicy.builder().withMaxPartSize(1024 * 1024).build())
+                                DefaultRollingPolicy.builder()
+                                        .withMaxPartSize(MemorySize.ofMebiBytes(1))
+                                        .build())
                         .build();
         stream.sinkTo(sink);
         env.execute("test");

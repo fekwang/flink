@@ -19,6 +19,8 @@
 package org.apache.flink.table.types.extraction;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.java.typeutils.AvroUtils;
+import org.apache.flink.table.annotation.ArgumentHint;
 import org.apache.flink.table.annotation.DataTypeHint;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.dataview.DataView;
@@ -38,6 +40,7 @@ import org.apache.flink.table.types.KeyValueDataType;
 import org.apache.flink.table.types.logical.LogicalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 import org.apache.flink.table.types.utils.ClassDataTypeConverter;
+import org.apache.flink.table.types.utils.TypeInfoDataTypeConverter;
 import org.apache.flink.types.Row;
 
 import javax.annotation.Nullable;
@@ -68,11 +71,11 @@ import static org.apache.flink.table.types.extraction.ExtractionUtils.extraction
 import static org.apache.flink.table.types.extraction.ExtractionUtils.hasInvokableConstructor;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.isStructuredFieldMutable;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.resolveVariable;
+import static org.apache.flink.table.types.extraction.ExtractionUtils.resolveVariableWithClassContext;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.toClass;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.validateStructuredClass;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.validateStructuredFieldReadability;
 import static org.apache.flink.table.types.extraction.ExtractionUtils.validateStructuredSelfReference;
-import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.hasRoot;
 import static org.apache.flink.table.types.logical.utils.LogicalTypeChecks.isCompositeType;
 
 /**
@@ -140,8 +143,11 @@ public final class DataTypeExtractor {
             DataTypeFactory typeFactory, Class<?> baseClass, Method method, int paramPos) {
         final Parameter parameter = method.getParameters()[paramPos];
         final DataTypeHint hint = parameter.getAnnotation(DataTypeHint.class);
+        final ArgumentHint argumentHint = parameter.getAnnotation(ArgumentHint.class);
         final DataTypeTemplate template;
-        if (hint != null) {
+        if (argumentHint != null) {
+            template = DataTypeTemplate.fromAnnotation(typeFactory, argumentHint.type());
+        } else if (hint != null) {
             template = DataTypeTemplate.fromAnnotation(typeFactory, hint);
         } else {
             template = DataTypeTemplate.fromDefaults();
@@ -157,11 +163,61 @@ public final class DataTypeExtractor {
     }
 
     /**
+     * Extracts a data type from a method parameter by considering surrounding classes and parameter
+     * annotation. This version assumes that the parameter is a generic type, and uses the generic
+     * position type as the extracted data type. For example, if the parameter is a
+     * CompletableFuture&lt;Long&gt; and genericPos is 0, it will extract Long.
+     */
+    public static DataType extractFromGenericMethodParameter(
+            DataTypeFactory typeFactory,
+            Class<?> baseClass,
+            Method method,
+            int paramPos,
+            int genericPos) {
+
+        Type parameterType = method.getGenericParameterTypes()[paramPos];
+        parameterType = resolveVariableWithClassContext(baseClass, parameterType);
+        if (!(parameterType instanceof ParameterizedType)) {
+            throw extractionError(
+                    "The method '%s' needs generic parameters for the %d arg.",
+                    method.getName(), paramPos);
+        }
+        final Type genericParameterType =
+                ((ParameterizedType) parameterType).getActualTypeArguments()[genericPos];
+        final Parameter parameter = method.getParameters()[paramPos];
+        final DataTypeHint hint = parameter.getAnnotation(DataTypeHint.class);
+        final DataTypeTemplate template;
+        if (hint != null) {
+            template = DataTypeTemplate.fromAnnotation(typeFactory, hint);
+        } else {
+            template = DataTypeTemplate.fromDefaults();
+        }
+        return extractDataTypeWithClassContext(
+                typeFactory,
+                template,
+                baseClass,
+                genericParameterType,
+                String.format(
+                        " in generic parameter %d of method '%s' in class '%s'",
+                        paramPos, method.getName(), baseClass.getName()));
+    }
+
+    /**
      * Extracts a data type from a method return type by considering surrounding classes and method
      * annotation.
      */
     public static DataType extractFromMethodOutput(
             DataTypeFactory typeFactory, Class<?> baseClass, Method method) {
+        return extractFromMethodOutput(
+                typeFactory, baseClass, method, method.getGenericReturnType());
+    }
+
+    /**
+     * Extracts a data type from a method return type with specifying the method's type explicitly
+     * by considering surrounding classes and method annotation.
+     */
+    public static DataType extractFromMethodOutput(
+            DataTypeFactory typeFactory, Class<?> baseClass, Method method, Type methodReturnType) {
         final DataTypeHint hint = method.getAnnotation(DataTypeHint.class);
         final DataTypeTemplate template;
         if (hint != null) {
@@ -173,7 +229,7 @@ public final class DataTypeExtractor {
                 typeFactory,
                 template,
                 baseClass,
-                method.getGenericReturnType(),
+                methodReturnType,
                 String.format(
                         " in return type of method '%s' in class '%s'",
                         method.getName(), baseClass.getName()));
@@ -211,8 +267,11 @@ public final class DataTypeExtractor {
         final Class<?> clazz = toClass(resolvedType);
         if (clazz != null) {
             final DataTypeHint hint = clazz.getAnnotation(DataTypeHint.class);
+            final ArgumentHint argumentHint = clazz.getAnnotation(ArgumentHint.class);
             if (hint != null) {
                 template = outerTemplate.mergeWithInnerAnnotation(typeFactory, hint);
+            } else if (argumentHint != null) {
+                template = outerTemplate.mergeWithInnerAnnotation(typeFactory, argumentHint.type());
             }
         }
         // main work
@@ -280,6 +339,12 @@ public final class DataTypeExtractor {
 
         // MAP
         resultDataType = extractMapType(template, typeHierarchy, type);
+        if (resultDataType != null) {
+            return resultDataType;
+        }
+
+        // AVRO
+        resultDataType = extractAvroType(type);
         if (resultDataType != null) {
             return resultDataType;
         }
@@ -469,6 +534,16 @@ public final class DataTypeExtractor {
         return DataTypes.MAP(key, value);
     }
 
+    private @Nullable DataType extractAvroType(Type type) {
+        final Class<?> clazz = toClass(type);
+        if (AvroUtils.isAvroSpecificRecord(clazz)) {
+            // refer to TypeExtractor#privateGetForClass to get the AvroTypeInfo
+            return TypeInfoDataTypeConverter.toDataType(
+                    typeFactory, AvroUtils.getAvroUtils().createAvroTypeInfo(clazz));
+        }
+        return null;
+    }
+
     private DataType extractStructuredType(
             DataTypeTemplate template, List<Type> typeHierarchy, Type type) {
         final Class<?> clazz = toClass(type);
@@ -610,13 +685,13 @@ public final class DataTypeExtractor {
 
         // view was annotated
         if (ListView.class.isAssignableFrom(clazz)) {
-            if (!hasRoot(dataType.getLogicalType(), LogicalTypeRoot.ARRAY)) {
+            if (!dataType.getLogicalType().is(LogicalTypeRoot.ARRAY)) {
                 throw extractionError("Annotated list views should have a logical type of ARRAY.");
             }
             final CollectionDataType collectionDataType = (CollectionDataType) dataType;
             return ListView.newListViewDataType(collectionDataType.getElementDataType());
         } else if (MapView.class.isAssignableFrom(clazz)) {
-            if (!hasRoot(dataType.getLogicalType(), LogicalTypeRoot.MAP)) {
+            if (!dataType.getLogicalType().is(LogicalTypeRoot.MAP)) {
                 throw extractionError("Annotated map views should have a logical type of MAP.");
             }
             final KeyValueDataType keyValueDataType = (KeyValueDataType) dataType;

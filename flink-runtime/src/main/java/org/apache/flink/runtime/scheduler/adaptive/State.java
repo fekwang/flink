@@ -26,12 +26,13 @@ import org.apache.flink.util.function.ThrowingConsumer;
 import org.slf4j.Logger;
 
 import java.util.Optional;
+import java.util.function.Consumer;
 
 /**
  * State abstraction of the {@link AdaptiveScheduler}. This interface contains all methods every
  * state implementation must support.
  */
-interface State {
+interface State extends LabeledGlobalFailureHandler {
 
     /**
      * This method is called whenever one transitions out of this state.
@@ -51,7 +52,8 @@ interface State {
     void suspend(Throwable cause);
 
     /**
-     * Gets the current {@link JobStatus}.
+     * Gets the current {@link JobStatus}. The returned job status will remain unchanged at least
+     * until the scheduler transitions to a different state.
      *
      * @return the current {@link JobStatus}
      */
@@ -63,13 +65,6 @@ interface State {
      * @return the current {@link ArchivedExecutionGraph}
      */
     ArchivedExecutionGraph getJob();
-
-    /**
-     * Handles a global failure.
-     *
-     * @param cause cause describes the global failure
-     */
-    void handleGlobalFailure(Throwable cause);
 
     /**
      * Gets the logger.
@@ -106,17 +101,45 @@ interface State {
      */
     default <T, E extends Exception> void tryRun(
             Class<? extends T> clazz, ThrowingConsumer<T, E> action, String debugMessage) throws E {
+        tryRun(
+                clazz,
+                x -> {
+                    getLogger()
+                            .debug(
+                                    "Running '{}' in state {}.",
+                                    debugMessage,
+                                    this.getClass().getSimpleName());
+                    ThrowingConsumer.unchecked(action).accept(x);
+                },
+                logger ->
+                        logger.debug(
+                                "Cannot run '{}' because the actual state is {} and not {}.",
+                                debugMessage,
+                                this.getClass().getSimpleName(),
+                                clazz.getSimpleName()));
+    }
+
+    /**
+     * Tries to run the action if this state is of type clazz.
+     *
+     * @param clazz clazz describes the target type
+     * @param action action to run if this state is of the target type
+     * @param invalidStateCallback that is called if the state isn't matching the expected one.
+     * @param <T> target type
+     * @param <E> error type
+     * @throws E an exception if the action fails
+     */
+    default <T, E extends Exception> void tryRun(
+            Class<? extends T> clazz,
+            ThrowingConsumer<T, E> action,
+            Consumer<Logger> invalidStateCallback)
+            throws E {
         final Optional<? extends T> asOptional = as(clazz);
 
         if (asOptional.isPresent()) {
             action.accept(asOptional.get());
         } else {
-            getLogger()
-                    .debug(
-                            "Cannot run '{}' because the actual state is {} and not {}.",
-                            debugMessage,
-                            this.getClass().getSimpleName(),
-                            clazz.getSimpleName());
+            invalidStateCallback.accept(getLogger());
         }
     }
 

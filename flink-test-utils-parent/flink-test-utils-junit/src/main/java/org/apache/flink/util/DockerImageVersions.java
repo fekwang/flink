@@ -22,19 +22,25 @@ package org.apache.flink.util;
  * Utility class for defining the image names and versions of Docker containers used during the Java
  * tests. The names/versions are centralised here in order to make testing version updates easier,
  * as well as to provide a central file to use as a key when caching testing Docker files.
+ *
+ * <p>In order for an image to be cached it must be added to {@code
+ * cache_docker_images.sh#DOCKER_IMAGE_CACHE_PATTERN}.
  */
 public class DockerImageVersions {
-    public static final String ELASTICSEARCH_7 =
-            "docker.elastic.co/elasticsearch/elasticsearch-oss:7.5.1";
 
-    public static final String ELASTICSEARCH_6 =
-            "docker.elastic.co/elasticsearch/elasticsearch-oss:6.3.1";
+    public static final String KAFKA = "confluentinc/cp-kafka:7.2.2";
 
-    public static final String KAFKA = "confluentinc/cp-kafka:5.5.2";
-
-    public static final String RABBITMQ = "rabbitmq:3.7.25-management-alpine";
+    public static final String SCHEMA_REGISTRY = "confluentinc/cp-schema-registry:7.2.2";
 
     public static final String KINESALITE = "instructure/kinesalite:latest";
 
-    public static final String PULSAR = "apachepulsar/pulsar:2.8.0";
+    public static final String LOCALSTACK = "localstack/localstack:0.13.3";
+
+    public static final String MINIO = "minio/minio:RELEASE.2022-02-07T08-17-33Z";
+
+    public static final String ZOOKEEPER = "zookeeper:3.4.14";
+
+    public static final String HIVE2 = "prestodb/hdp2.6-hive:10";
+
+    public static final String HIVE3 = "prestodb/hive3.1-hive:10";
 }

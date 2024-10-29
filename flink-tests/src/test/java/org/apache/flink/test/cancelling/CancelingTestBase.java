@@ -20,22 +20,16 @@ package org.apache.flink.test.cancelling;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
-import org.apache.flink.api.common.Plan;
 import org.apache.flink.client.program.ClusterClient;
-import org.apache.flink.configuration.AkkaOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
 import org.apache.flink.configuration.MemorySize;
-import org.apache.flink.configuration.NettyShuffleEnvironmentOptions;
+import org.apache.flink.configuration.RpcOptions;
 import org.apache.flink.configuration.TaskManagerOptions;
-import org.apache.flink.optimizer.DataStatistics;
-import org.apache.flink.optimizer.Optimizer;
-import org.apache.flink.optimizer.plan.OptimizedPlan;
-import org.apache.flink.optimizer.plantranslate.JobGraphGenerator;
 import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.runtime.testutils.TestingUtils;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.testutils.TestingUtils;
 import org.apache.flink.util.TestLogger;
 
 import org.junit.Assert;
@@ -45,6 +39,8 @@ import java.util.concurrent.TimeUnit;
 
 import scala.concurrent.duration.Deadline;
 import scala.concurrent.duration.FiniteDuration;
+
+import static org.junit.Assert.assertEquals;
 
 /** Base class for testing job cancellation. */
 public abstract class CancelingTestBase extends TestLogger {
@@ -82,22 +78,20 @@ public abstract class CancelingTestBase extends TestLogger {
     private static Configuration getConfiguration() {
         verifyJvmOptions();
         Configuration config = new Configuration();
-        config.setBoolean(CoreOptions.FILESYTEM_DEFAULT_OVERRIDE, true);
-        config.set(AkkaOptions.ASK_TIMEOUT_DURATION, TestingUtils.DEFAULT_AKKA_ASK_TIMEOUT);
+        config.set(CoreOptions.FILESYTEM_DEFAULT_OVERRIDE, true);
+        config.set(RpcOptions.ASK_TIMEOUT_DURATION, TestingUtils.DEFAULT_ASK_TIMEOUT);
         config.set(TaskManagerOptions.MEMORY_SEGMENT_SIZE, MemorySize.parse("4096"));
-        config.setInteger(NettyShuffleEnvironmentOptions.NETWORK_NUM_BUFFERS, 2048);
 
         return config;
     }
 
     // --------------------------------------------------------------------------------------------
 
-    protected void runAndCancelJob(Plan plan, final int msecsTillCanceling, int maxTimeTillCanceled)
+    protected void runAndCancelJob(
+            JobGraph jobGraph, final int msecsTillCanceling, int maxTimeTillCanceled)
             throws Exception {
         // submit job
-        final JobGraph jobGraph = getJobGraph(plan);
-
-        final long rpcTimeout = configuration.get(AkkaOptions.ASK_TIMEOUT_DURATION).toMillis();
+        final long rpcTimeout = configuration.get(RpcOptions.ASK_TIMEOUT_DURATION).toMillis();
 
         ClusterClient<?> client = CLUSTER.getClusterClient();
         JobID jobID = client.submitJob(jobGraph).get();
@@ -127,15 +121,6 @@ public abstract class CancelingTestBase extends TestLogger {
             jobStatusAfterCancel =
                     client.getJobStatus(jobID).get(rpcTimeout, TimeUnit.MILLISECONDS);
         }
-        if (jobStatusAfterCancel != JobStatus.CANCELED) {
-            Assert.fail("Failed to cancel job with ID " + jobID + '.');
-        }
-    }
-
-    private JobGraph getJobGraph(final Plan plan) {
-        final Optimizer pc = new Optimizer(new DataStatistics(), getConfiguration());
-        final OptimizedPlan op = pc.compile(plan);
-        final JobGraphGenerator jgg = new JobGraphGenerator();
-        return jgg.compileJobGraph(op);
+        assertEquals(JobStatus.CANCELED, jobStatusAfterCancel);
     }
 }

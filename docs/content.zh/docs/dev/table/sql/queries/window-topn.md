@@ -22,20 +22,25 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# Window Top-N
-{{< label Streaming >}}
+# 窗口 Top-N
+{{< label Batch >}} {{< label Streaming >}}
 
-Window Top-N is a special [Top-N]({{< ref "docs/dev/table/sql/queries/topn" >}}) which returns the N smallest or largest values for each window and other partitioned keys.
+窗口 Top-N 是特殊的 [Top-N]({{< ref "docs/dev/table/sql/queries/topn" >}})，它返回每个分区键的每个窗口的N个最小或最大值。
 
-For streaming queries, unlike regular Top-N on continuous tables, window Top-N does not emit intermediate results but only a final result, the total top N records at the end of the window. Moreover, window Top-N purges all intermediate state when no longer needed.
-Therefore, window Top-N queries have better performance if users don't need results updated per record. Usually, Window Top-N is used with [Window Aggregation]({{< ref "docs/dev/table/sql/queries/window-agg" >}}) together.
+与普通Top-N不同，窗口Top-N只在窗口最后返回汇总的Top-N数据，不会产生中间结果。窗口 Top-N 会在窗口结束后清除不需要的中间状态。
+因此，窗口 Top-N 适用于用户不需要每条数据都更新Top-N结果的场景，相对普通Top-N来说性能更好。通常，窗口 Top-N 直接用于 [窗口表值函数]({{< ref "docs/dev/table/sql/queries/window-tvf" >}})上。
+另外，窗口 Top-N 可以用于基于 [窗口表值函数]({{< ref "docs/dev/table/sql/queries/window-tvf" >}}) 的操作之上，比如 [窗口聚合]({{< ref "docs/dev/table/sql/queries/window-agg" >}})，[窗口 Top-N]({{< ref "docs/dev/table/sql/queries/window-topn">}}) 和 [窗口关联]({{< ref "docs/dev/table/sql/queries/window-join">}})。
 
-Window Top-N can be defined in the same syntax as regular Top-N, see [Top-N documentation]({{< ref "docs/dev/table/sql/queries/topn" >}}) for more information.
-Besides that, Window Top-N requires the `PARTITION BY` clause contains `window_start` and `window_end` columns of the relation applied [Windowing TVF]({{< ref "docs/dev/table/sql/queries/window-tvf" >}}) or [Window Aggregation]({{< ref "docs/dev/table/sql/queries/window-agg" >}}).
-Otherwise, the optimizer won’t be able to translate the query.
+{{< hint info >}}
+注意：`SESSION` 窗口 Top-N 目前不支持批模式。
+{{< /hint >}}
+
+窗口 Top-N 的语法和普通的 Top-N 相同，更多信息参见：[Top-N 文档]({{< ref "docs/dev/table/sql/queries/topn" >}})。
+除此之外，窗口 Top-N 需要 `PARTITION BY` 子句包含 [窗口表值函数]({{< ref "docs/dev/table/sql/queries/window-tvf" >}}) 或 [窗口聚合]({{< ref "docs/dev/table/sql/queries/window-agg" >}}) 产生的 `window_start` 和 `window_end`。
+否则优化器无法翻译。
 
 
-The following shows the syntax of the Window Top-N statement:
+下面展示了窗口 Top-N 的语法：
 
 ```sql
 SELECT [column_list]
@@ -47,9 +52,11 @@ FROM (
 WHERE rownum <= N [AND conditions]
 ```
 
-## Example
+## 示例
 
-The following example shows how to calculate Top 3 suppliers who have the highest sales for every tumbling 10 minutes window.
+### 在窗口聚合后进行窗口 Top-N
+
+下面的示例展示了在10分钟的滚动窗口上计算销售额位列前三的供应商。
 
 ```sql
 -- tables must have time attribute, e.g. `bidtime` in this table
@@ -100,11 +107,36 @@ Flink SQL> SELECT *
 +------------------+------------------+-------------+-------+-----+--------+
 ```
 
-*Note: in order to better understand the behavior of windowing, we simplify the displaying of timestamp values to not show the trailing zeros, e.g. `2020-04-15 08:05` should be displayed as `2020-04-15 08:05:00.000` in Flink SQL Client if the type is `TIMESTAMP(3)`.*
+*注意： 为了更好地理解窗口行为，这里把 timestamp 值后面的0去掉了。例如：在 Flink SQL Client 中，如果类型是 `TIMESTAMP(3)` ，`2020-04-15 08:05` 应该显示成 `2020-04-15 08:05:00.000` 。*
 
-## Limitation
+### 在窗口表值函数后进行窗口 Top-N
 
-Currently, Flink only supports Window Top-N which follows after [Window Aggregation]({{< ref "docs/dev/table/sql/queries/window-agg" >}}). Window Top-N after [Windowing TVF]({{< ref "docs/dev/table/sql/queries/window-tvf" >}}) will be support in the near future.
+下面的示例展示了在10分钟的滚动窗口上计算价格位列前三的数据。
+
+```sql
+Flink SQL> SELECT *
+  FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY window_start, window_end ORDER BY price DESC) as rownum
+    FROM TABLE(
+               TUMBLE(TABLE Bid, DESCRIPTOR(bidtime), INTERVAL '10' MINUTES))
+  ) WHERE rownum <= 3;
++------------------+-------+------+-------------+------------------+------------------+--------+
+|          bidtime | price | item | supplier_id |     window_start |       window_end | rownum |
++------------------+-------+------+-------------+------------------+------------------+--------+
+| 2020-04-15 08:05 |  4.00 |    A |   supplier1 | 2020-04-15 08:00 | 2020-04-15 08:10 |      2 |
+| 2020-04-15 08:06 |  4.00 |    C |   supplier2 | 2020-04-15 08:00 | 2020-04-15 08:10 |      3 |
+| 2020-04-15 08:09 |  5.00 |    D |   supplier4 | 2020-04-15 08:00 | 2020-04-15 08:10 |      1 |
+| 2020-04-15 08:11 |  2.00 |    B |   supplier3 | 2020-04-15 08:10 | 2020-04-15 08:20 |      3 |
+| 2020-04-15 08:15 |  3.00 |    H |   supplier2 | 2020-04-15 08:10 | 2020-04-15 08:20 |      2 |
+| 2020-04-15 08:17 |  6.00 |    F |   supplier5 | 2020-04-15 08:10 | 2020-04-15 08:20 |      1 |
++------------------+-------+------+-------------+------------------+------------------+--------+
+```
+
+*注意： 为了更好地理解窗口行为，这里把 timestamp 值后面的0去掉了。例如：在 Flink SQL Client 中，如果类型是 `TIMESTAMP(3)` ，`2020-04-15 08:05` 应该显示成 `2020-04-15 08:05:00.000` 。*
+
+## 限制
+
+目前，Flink只支持在滚动，滑动和累计 [窗口表值函数]({{< ref "docs/dev/table/sql/queries/window-tvf" >}})后进行窗口 Top-N。基于会话窗口的Top-N将在将来版本中支持。
 
 
 {{< top >}}

@@ -18,6 +18,7 @@
 
 package org.apache.flink.connector.base.source.reader;
 
+import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.connector.source.SourceReader;
 import org.apache.flink.api.connector.source.SourceReaderContext;
 import org.apache.flink.api.connector.source.SourceSplit;
@@ -26,7 +27,8 @@ import org.apache.flink.connector.base.source.reader.fetcher.SingleThreadFetcher
 import org.apache.flink.connector.base.source.reader.splitreader.SplitReader;
 import org.apache.flink.connector.base.source.reader.synchronization.FutureCompletingBlockingQueue;
 
-import java.util.Collection;
+import javax.annotation.Nullable;
+
 import java.util.function.Supplier;
 
 /**
@@ -47,7 +49,7 @@ import java.util.function.Supplier;
  *   <li>The class must override the methods to convert back and forth between the immutable splits
  *       ({@code SplitT}) and the mutable split state representation ({@code SplitStateT}).
  *   <li>Finally, the reader must decide what to do when it starts ({@link #start()}) or when a
- *       split is finished ({@link #onSplitFinished(Collection)}).
+ *       split is finished ({@link #onSplitFinished(java.util.Map)}).
  * </ul>
  *
  * @param <E> The type of the records (the raw type that typically contains checkpointing
@@ -56,6 +58,7 @@ import java.util.function.Supplier;
  * @param <SplitT> The type of the splits processed by the source.
  * @param <SplitStateT> The type of the mutable state per split.
  */
+@PublicEvolving
 public abstract class SingleThreadMultiplexSourceReaderBase<
                 E, T, SplitT extends SourceSplit, SplitStateT>
         extends SourceReaderBase<E, T, SplitT, SplitStateT> {
@@ -71,29 +74,8 @@ public abstract class SingleThreadMultiplexSourceReaderBase<
             RecordEmitter<E, T, SplitStateT> recordEmitter,
             Configuration config,
             SourceReaderContext context) {
-        this(
-                new FutureCompletingBlockingQueue<>(
-                        config.getInteger(SourceReaderOptions.ELEMENT_QUEUE_CAPACITY)),
-                splitReaderSupplier,
-                recordEmitter,
-                config,
-                context);
-    }
-
-    /**
-     * This constructor behaves like {@link #SingleThreadMultiplexSourceReaderBase(Supplier,
-     * RecordEmitter, Configuration, SourceReaderContext)}, but accepts a specific {@link
-     * FutureCompletingBlockingQueue}.
-     */
-    public SingleThreadMultiplexSourceReaderBase(
-            FutureCompletingBlockingQueue<RecordsWithSplitIds<E>> elementsQueue,
-            Supplier<SplitReader<E, SplitT>> splitReaderSupplier,
-            RecordEmitter<E, T, SplitStateT> recordEmitter,
-            Configuration config,
-            SourceReaderContext context) {
         super(
-                elementsQueue,
-                new SingleThreadFetcherManager<>(elementsQueue, splitReaderSupplier),
+                new SingleThreadFetcherManager<>(splitReaderSupplier, config),
                 recordEmitter,
                 config,
                 context);
@@ -105,11 +87,25 @@ public abstract class SingleThreadMultiplexSourceReaderBase<
      * FutureCompletingBlockingQueue} and {@link SingleThreadFetcherManager}.
      */
     public SingleThreadMultiplexSourceReaderBase(
-            FutureCompletingBlockingQueue<RecordsWithSplitIds<E>> elementsQueue,
             SingleThreadFetcherManager<E, SplitT> splitFetcherManager,
             RecordEmitter<E, T, SplitStateT> recordEmitter,
             Configuration config,
             SourceReaderContext context) {
-        super(elementsQueue, splitFetcherManager, recordEmitter, config, context);
+        super(splitFetcherManager, recordEmitter, config, context);
+    }
+
+    /**
+     * This constructor behaves like {@link #SingleThreadMultiplexSourceReaderBase(Supplier,
+     * RecordEmitter, Configuration, SourceReaderContext)}, but accepts a specific {@link
+     * FutureCompletingBlockingQueue}, {@link SingleThreadFetcherManager} and {@link
+     * RecordEvaluator}.
+     */
+    public SingleThreadMultiplexSourceReaderBase(
+            SingleThreadFetcherManager<E, SplitT> splitFetcherManager,
+            RecordEmitter<E, T, SplitStateT> recordEmitter,
+            @Nullable RecordEvaluator<T> eofRecordEvaluator,
+            Configuration config,
+            SourceReaderContext context) {
+        super(splitFetcherManager, recordEmitter, eofRecordEvaluator, config, context);
     }
 }

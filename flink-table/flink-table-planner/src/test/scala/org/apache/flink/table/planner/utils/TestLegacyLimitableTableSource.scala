@@ -15,32 +15,31 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.utils
 
-import java.util
-
-import org.apache.flink.api.common.ExecutionConfig
+import org.apache.flink.api.common.serialization.SerializerConfigImpl
 import org.apache.flink.api.common.typeinfo.TypeInformation
-import org.apache.flink.api.java.io.CollectionInputFormat
 import org.apache.flink.api.java.typeutils.RowTypeInfo
+import org.apache.flink.legacy.table.factories.StreamTableSourceFactory
+import org.apache.flink.legacy.table.sources.StreamTableSource
 import org.apache.flink.streaming.api.datastream.DataStream
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment
+import org.apache.flink.streaming.api.legacy.io.CollectionInputFormat
+import org.apache.flink.table.api.TableEnvironment
 import org.apache.flink.table.api.internal.TableEnvironmentInternal
-import org.apache.flink.table.api.{TableEnvironment, TableSchema}
 import org.apache.flink.table.descriptors.ConnectorDescriptorValidator.CONNECTOR_TYPE
 import org.apache.flink.table.descriptors.DescriptorProperties
-import org.apache.flink.table.descriptors.Schema.SCHEMA
-import org.apache.flink.table.factories.StreamTableSourceFactory
-import org.apache.flink.table.sources._
+import org.apache.flink.table.legacy.api.TableSchema
+import org.apache.flink.table.legacy.descriptors.Schema.SCHEMA
+import org.apache.flink.table.legacy.sources.{LimitableTableSource, TableSource}
 import org.apache.flink.table.utils.EncodingUtils
 import org.apache.flink.types.Row
 
+import java.util
+
 import scala.collection.JavaConverters._
 
-/**
-  * The table source which support push-down the limit to the source.
-  */
+/** The table source which support push-down the limit to the source. */
 class TestLegacyLimitableTableSource(
     data: Seq[Row],
     rowType: RowTypeInfo,
@@ -61,7 +60,7 @@ class TestLegacyLimitableTableSource(
       data.asJava
     }
     execEnv.createInput(
-      new CollectionInputFormat(dataSet, rowType.createSerializer(new ExecutionConfig)),
+      new CollectionInputFormat(dataSet, rowType.createSerializer(new SerializerConfigImpl)),
       rowType)
   }
 
@@ -90,8 +89,11 @@ object TestLegacyLimitableTableSource {
       data: Seq[Row],
       schema: TableSchema,
       tableName: String): Unit = {
-    val source = new TestLegacyLimitableTableSource(data,
-      schema.toRowType.asInstanceOf[RowTypeInfo], -1L, false)
+    val source = new TestLegacyLimitableTableSource(
+      data,
+      schema.toRowType.asInstanceOf[RowTypeInfo],
+      -1L,
+      false)
     tEnv.asInstanceOf[TableEnvironmentInternal].registerTableSourceInternal(tableName, source)
   }
 }
@@ -114,7 +116,10 @@ class TestLegacyLimitableTableSourceFactory extends StreamTableSourceFactory[Row
 
     val limitablePushedDown = dp.getOptionalBoolean("limitable-push-down").orElse(false)
     new TestLegacyLimitableTableSource(
-      data, tableSchema.toRowType.asInstanceOf[RowTypeInfo], limit, limitablePushedDown)
+      data,
+      tableSchema.toRowType.asInstanceOf[RowTypeInfo],
+      limit,
+      limitablePushedDown)
   }
 
   override def requiredContext(): util.Map[String, String] = {
@@ -129,4 +134,3 @@ class TestLegacyLimitableTableSourceFactory extends StreamTableSourceFactory[Row
     supported
   }
 }
-

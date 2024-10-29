@@ -28,7 +28,7 @@ under the License.
 
 # 导入 Flink 到 IDE 中
 
-以下章节描述了如何将 Flink 项目导入到 IDE 中以进行 Flink 本身的源码开发。有关 Flink 程序编写的信息，请参阅 [Java API]({{< ref "docs/dev/datastream/project-configuration" >}}) 和 [Scala API]({{< ref "docs/dev/datastream/project-configuration" >}}) 快速入门指南。
+以下章节描述了如何将 Flink 项目导入到 IDE 中以进行 Flink 本身的源码开发。有关 Flink 程序编写的信息，请参阅 [Java API]({{< ref "docs/dev/configuration/overview" >}}) 和 [Scala API]({{< ref "docs/dev/configuration/overview" >}}) 快速入门指南。
 
 {{< hint info >}}
 每当你的 IDE 无法正常工作时，请优先尝试使用 Maven 命令行（`mvn clean package -DskipTests`），因为它可能是由于你的 IDE 中存在错误或未正确设置。
@@ -103,7 +103,7 @@ IntelliJ 使用 Checkstyle-IDEA 插件在 IDE 中支持 checkstyle。
 1. 从 IntelliJ 插件存储库中安装 "Checkstyle-IDEA" 插件。
 2. 通过 Settings → Tools → Checkstyle 配置插件。
 3. 将 "Scan Scope" 设置为仅 Java 源（包括测试）。
-4. 在 "Checkstyle Version" 下拉菜单中选择 _8.14_ 版本，然后单击 "apply"。**此步骤很重要，请勿跳过！**
+4. 在 "Checkstyle Version" 下拉菜单中选择 _10.18.2_ 版本，然后单击 "apply"。**此步骤很重要，请勿跳过！**
 5. 在 "Configuration File" 窗格中，点击 "+" 图标添加新配置：
     1. 将 "Description" 设置为 Flink。
     2. 选择 "Use a local Checkstyle file" ，然后将其指向你存储库中 `"tools/maven/checkstyle.xml"` 文件。
@@ -167,6 +167,10 @@ IntelliJ 使用 Checkstyle-IDEA 插件在 IDE 中支持 checkstyle。
 
 这意味着 IntelliJ 正在为该项目使用 JDK 11，但是你正在使用不支持 Java 11 的 Flink 版本。这通常在将 IntelliJ 设置为使用 JDK 11 并检出 Flink 的旧版本（<= 1.9）时发生。解决方法：打开项目设置窗口（File → Project Structure → Project Settings: Project），然后选择 JDK 8 作为项目 SDK。如果要使用 JDK 11，则可能必须在切换回新的 Flink 版本后恢复此状态。
 
+- 编译失败 `程序包sun.misc不存在`
+
+这意味着 IntelliJ 正在为该项目使用 JDK 11, 但使用了 `--release` 编译选项来编译 JDK8 字节码，这个编译选项和Flink当前的build方式不兼容。解决办法： 进入 "Preferences" → "Build, Execution, Deployment" → "Compiler" → "Java Compiler", 取消选中 "Use '--release' option for cross-compilation (Java 9 and later)".
+
 - 运行 Flink Examples 且 Flink 出现关于 `NoClassDefFoundError` 错误信息
 
 这可能是由于将 Flink 依赖项设置为 provided，导致它们没有自动放置在类路径中。你可以在运行配置中选中 "Include dependencies with 'Provided' scope" 框，也可以创建一个调用 `main()` 方法的测试示例（provided 依赖关系在测试类路径中可用）。
@@ -203,7 +207,7 @@ IntelliJ 使用 Checkstyle-IDEA 插件在 IDE 中支持 checkstyle。
 Apache Flink 的 Python 代码检查样式应在项目中引入 flake8 的外部工具。
 
 1. 将 flake8 安装在使用的 Python 解释器中（请参阅([https://pypi.org/project/flake8/](https://pypi.org/project/flake8/))）。
-2. 选择 "PyCharm → Preferences... → Tools → External Tools → +（在右侧页面的左下角）"，然后配置外部工具。
+2. 选择 "PyCharm → Settings... → Tools → External Tools → +（在右侧页面的左下角）"，然后配置外部工具。
 3. 将 "Name" 设置为 "flake8"。
 4. 将 "Description" 设置为 "code style check"。
 5. 将 "Program" 设置为 Python 解释器路径（例如 /usr/bin/python）。

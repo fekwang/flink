@@ -20,6 +20,8 @@ package org.apache.flink.connectors.hive;
 
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.connector.source.Boundedness;
+import org.apache.flink.api.connector.source.DynamicFilteringInfo;
+import org.apache.flink.api.connector.source.DynamicParallelismInference;
 import org.apache.flink.api.connector.source.SplitEnumerator;
 import org.apache.flink.api.connector.source.SplitEnumeratorContext;
 import org.apache.flink.connector.file.src.AbstractFileSource;
@@ -28,12 +30,14 @@ import org.apache.flink.connector.file.src.PendingSplitsCheckpoint;
 import org.apache.flink.connector.file.src.assigners.FileSplitAssigner;
 import org.apache.flink.connector.file.src.enumerate.FileEnumerator;
 import org.apache.flink.connector.file.src.reader.BulkFormat;
+import org.apache.flink.connector.file.table.ContinuousPartitionFetcher;
+import org.apache.flink.connector.file.table.LimitableBulkFormat;
 import org.apache.flink.connectors.hive.read.HiveSourceSplit;
 import org.apache.flink.core.fs.Path;
 import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.table.catalog.ObjectPath;
+import org.apache.flink.table.connector.source.DynamicFilteringEvent;
 import org.apache.flink.table.data.RowData;
-import org.apache.flink.table.filesystem.ContinuousPartitionFetcher;
 import org.apache.flink.util.Preconditions;
 
 import org.apache.hadoop.hive.metastore.api.Partition;
@@ -55,15 +59,21 @@ import java.util.List;
  * @param <T> the type of record returned by this source
  */
 @PublicEvolving
-public class HiveSource<T> extends AbstractFileSource<T, HiveSourceSplit> {
+public class HiveSource<T> extends AbstractFileSource<T, HiveSourceSplit>
+        implements DynamicParallelismInference {
 
     private static final long serialVersionUID = 1L;
 
     private final JobConfWrapper jobConfWrapper;
     private final List<String> partitionKeys;
+
+    private final String hiveVersion;
+    private final List<String> dynamicFilterPartitionKeys;
+    private final List<byte[]> partitionBytes;
     private final ContinuousPartitionFetcher<Partition, ?> fetcher;
     private final HiveTableSource.HiveContinuousPartitionFetcherContext<?> fetcherContext;
     private final ObjectPath tablePath;
+    private Long limit = null;
 
     HiveSource(
             Path[] inputPaths,
@@ -74,6 +84,9 @@ public class HiveSource<T> extends AbstractFileSource<T, HiveSourceSplit> {
             JobConf jobConf,
             ObjectPath tablePath,
             List<String> partitionKeys,
+            String hiveVersion,
+            @Nullable List<String> dynamicFilterPartitionKeys,
+            List<byte[]> partitionBytes,
             @Nullable ContinuousPartitionFetcher<Partition, ?> fetcher,
             @Nullable HiveTableSource.HiveContinuousPartitionFetcherContext<?> fetcherContext) {
         super(
@@ -85,8 +98,14 @@ public class HiveSource<T> extends AbstractFileSource<T, HiveSourceSplit> {
         this.jobConfWrapper = new JobConfWrapper(jobConf);
         this.tablePath = tablePath;
         this.partitionKeys = partitionKeys;
+        this.hiveVersion = hiveVersion;
+        this.dynamicFilterPartitionKeys = dynamicFilterPartitionKeys;
+        this.partitionBytes = partitionBytes;
         this.fetcher = fetcher;
         this.fetcherContext = fetcherContext;
+        if (readerFormat instanceof LimitableBulkFormat) {
+            limit = ((LimitableBulkFormat<?, ?>) readerFormat).getLimit();
+        }
     }
 
     @Override
@@ -113,6 +132,8 @@ public class HiveSource<T> extends AbstractFileSource<T, HiveSourceSplit> {
                     fetcherContext.getConsumeStartOffset(),
                     Collections.emptyList(),
                     Collections.emptyList());
+        } else if (dynamicFilterPartitionKeys != null) {
+            return createDynamicSplitEnumerator(enumContext);
         } else {
             return super.createEnumerator(enumContext);
         }
@@ -160,5 +181,62 @@ public class HiveSource<T> extends AbstractFileSource<T, HiveSourceSplit> {
                 tablePath,
                 fetcher,
                 fetcherContext);
+    }
+
+    private SplitEnumerator<HiveSourceSplit, PendingSplitsCheckpoint<HiveSourceSplit>>
+            createDynamicSplitEnumerator(SplitEnumeratorContext<HiveSourceSplit> enumContext) {
+        return new DynamicHiveSplitEnumerator(
+                enumContext,
+                new HiveSourceDynamicFileEnumerator.Provider(
+                        tablePath.getFullName(),
+                        dynamicFilterPartitionKeys,
+                        partitionBytes,
+                        hiveVersion,
+                        jobConfWrapper),
+                getAssignerFactory());
+    }
+
+    @Override
+    public int inferParallelism(Context dynamicParallelismContext) {
+        FileEnumerator fileEnumerator;
+        List<HiveTablePartition> partitions;
+        if (dynamicFilterPartitionKeys != null) {
+            fileEnumerator =
+                    new HiveSourceDynamicFileEnumerator.Provider(
+                                    tablePath.getFullName(),
+                                    dynamicFilterPartitionKeys,
+                                    partitionBytes,
+                                    hiveVersion,
+                                    jobConfWrapper)
+                            .create();
+            if (dynamicParallelismContext.getDynamicFilteringInfo().isPresent()) {
+                DynamicFilteringInfo dynamicFilteringInfo =
+                        dynamicParallelismContext.getDynamicFilteringInfo().get();
+                if (dynamicFilteringInfo instanceof DynamicFilteringEvent) {
+                    ((HiveSourceDynamicFileEnumerator) fileEnumerator)
+                            .setDynamicFilteringData(
+                                    ((DynamicFilteringEvent) dynamicFilteringInfo).getData());
+                }
+            }
+            partitions = ((HiveSourceDynamicFileEnumerator) fileEnumerator).getFinalPartitions();
+        } else {
+            fileEnumerator = getEnumeratorFactory().create();
+            partitions = ((HiveSourceFileEnumerator) fileEnumerator).getPartitions();
+        }
+
+        return new HiveDynamicParallelismInferenceFactory(
+                        tablePath,
+                        jobConfWrapper.conf(),
+                        dynamicParallelismContext.getParallelismInferenceUpperBound())
+                .create()
+                .infer(
+                        () ->
+                                HiveSourceFileEnumerator.getNumFiles(
+                                        partitions, jobConfWrapper.conf()),
+                        () ->
+                                HiveSourceFileEnumerator.createInputSplits(
+                                                0, partitions, jobConfWrapper.conf(), true)
+                                        .size())
+                .limit(limit);
     }
 }

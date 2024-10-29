@@ -24,6 +24,7 @@ import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.CompositeType;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.data.DecimalDataUtils;
+import org.apache.flink.table.legacy.types.logical.TypeInformationRawType;
 import org.apache.flink.table.runtime.typeutils.BigDecimalTypeInfo;
 import org.apache.flink.table.runtime.typeutils.DecimalDataTypeInfo;
 import org.apache.flink.table.runtime.typeutils.InternalTypeInfo;
@@ -43,7 +44,6 @@ import org.apache.flink.table.types.logical.MapType;
 import org.apache.flink.table.types.logical.MultisetType;
 import org.apache.flink.table.types.logical.RowType;
 import org.apache.flink.table.types.logical.TimestampType;
-import org.apache.flink.table.types.logical.TypeInformationRawType;
 import org.apache.flink.table.types.logical.utils.LogicalTypeDefaultVisitor;
 
 import java.util.List;
@@ -125,13 +125,13 @@ public class PlannerTypeUtils {
     }
 
     /**
-     * Now in the conversion to the TypeInformation from DataType, type may loose some information
+     * Now in the conversion to the TypeInformation from DataType, type may lose some information
      * about nullable and precision. So we add this method to do a soft check.
      *
      * <p>The difference of {@link #isInteroperable} is ignore precisions.
      */
     public static boolean isAssignable(LogicalType t1, LogicalType t2) {
-        // Soft check for CharType, it is converted to String TypeInformation and loose char
+        // Soft check for CharType, it is converted to String TypeInformation and lose char
         // information.
         if (t1.getTypeRoot().getFamilies().contains(CHARACTER_STRING)
                 && t2.getTypeRoot().getFamilies().contains(CHARACTER_STRING)) {

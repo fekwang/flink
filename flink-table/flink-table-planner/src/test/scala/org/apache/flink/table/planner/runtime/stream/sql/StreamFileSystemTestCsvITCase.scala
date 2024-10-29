@@ -15,17 +15,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.sql
 
-import scala.collection.Seq
+import org.apache.flink.core.fs.Path
+import org.apache.flink.testutils.TestFileSystem
 
-/**
-  * Test csv [[StreamFileSystemITCaseBase]].
-  */
+import org.assertj.core.api.Assertions.fail
+import org.junit.jupiter.api.AfterEach
+
+/** Test csv [[StreamFileSystemITCaseBase]]. */
 class StreamFileSystemTestCsvITCase extends StreamFileSystemITCaseBase {
 
   override def formatProperties(): Array[String] = {
     super.formatProperties() ++ Seq("'format' = 'testcsv'")
+  }
+
+  override def getScheme: String = "test"
+
+  @AfterEach
+  def close(): Unit = {
+    val path = new Path(resultPath)
+    if (TestFileSystem.getNumberOfUnclosedOutputStream(path) != 0) {
+      fail(s"File $resultPath is not closed")
+    }
   }
 }

@@ -39,7 +39,7 @@ stream.join(otherStream)
     .where(<KeySelector>)
     .equalTo(<KeySelector>)
     .window(<WindowAssigner>)
-    .apply(<JoinFunction>)
+    .apply(<JoinFunction>);
 ```
 
 Some notes on semantics:
@@ -61,17 +61,17 @@ As illustrated in the figure, we define a tumbling window with the size of 2 mil
 ```java
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import java.time.Duration;
  
 ...
 
-DataStream<Integer> orangeStream = ...
-DataStream<Integer> greenStream = ...
+DataStream<Integer> orangeStream = ...;
+DataStream<Integer> greenStream = ...;
 
 orangeStream.join(greenStream)
     .where(<KeySelector>)
     .equalTo(<KeySelector>)
-    .window(TumblingEventTimeWindows.of(Time.milliseconds(2)))
+    .window(TumblingEventTimeWindows.of(Duration.ofMillis(2)))
     .apply (new JoinFunction<Integer, Integer, String> (){
         @Override
         public String join(Integer first, Integer second) {
@@ -83,8 +83,8 @@ orangeStream.join(greenStream)
 {{< tab "Scala" >}}
 
 ```scala
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows
+import java.time.Duration
 
 ...
 
@@ -94,7 +94,7 @@ val greenStream: DataStream[Integer] = ...
 orangeStream.join(greenStream)
     .where(elem => /* select key */)
     .equalTo(elem => /* select key */)
-    .window(TumblingEventTimeWindows.of(Time.milliseconds(2)))
+    .window(TumblingEventTimeWindows.of(Duration.ofMillis(2)))
     .apply { (e1, e2) => e1 + "," + e2 }
 ```
 
@@ -115,17 +115,17 @@ In this example we are using sliding windows with a size of two milliseconds and
 ```java
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import java.time.Duration;
 
 ...
 
-DataStream<Integer> orangeStream = ...
-DataStream<Integer> greenStream = ...
+DataStream<Integer> orangeStream = ...;
+DataStream<Integer> greenStream = ...;
 
 orangeStream.join(greenStream)
     .where(<KeySelector>)
     .equalTo(<KeySelector>)
-    .window(SlidingEventTimeWindows.of(Time.milliseconds(2) /* size */, Time.milliseconds(1) /* slide */))
+    .window(SlidingEventTimeWindows.of(Duration.ofMillis(2) /* size */, Duration.ofMillis(1) /* slide */))
     .apply (new JoinFunction<Integer, Integer, String> (){
         @Override
         public String join(Integer first, Integer second) {
@@ -137,8 +137,8 @@ orangeStream.join(greenStream)
 {{< tab "Scala" >}}
 
 ```scala
-import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.assigners.SlidingEventTimeWindows
+import java.time.Duration
 
 ...
 
@@ -148,7 +148,7 @@ val greenStream: DataStream[Integer] = ...
 orangeStream.join(greenStream)
     .where(elem => /* select key */)
     .equalTo(elem => /* select key */)
-    .window(SlidingEventTimeWindows.of(Time.milliseconds(2) /* size */, Time.milliseconds(1) /* slide */))
+    .window(SlidingEventTimeWindows.of(Duration.ofMillis(2) /* size */, Duration.ofMillis(1) /* slide */))
     .apply { (e1, e2) => e1 + "," + e2 }
 ```
 {{< /tab >}}
@@ -168,17 +168,17 @@ Here we define a session window join where each session is divided by a gap of a
 ```java
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import java.time.Duration;
  
 ...
 
-DataStream<Integer> orangeStream = ...
-DataStream<Integer> greenStream = ...
+DataStream<Integer> orangeStream = ...;
+DataStream<Integer> greenStream = ...;
 
 orangeStream.join(greenStream)
     .where(<KeySelector>)
     .equalTo(<KeySelector>)
-    .window(EventTimeSessionWindows.withGap(Time.milliseconds(1)))
+    .window(EventTimeSessionWindows.withGap(Duration.ofMillis(1)))
     .apply (new JoinFunction<Integer, Integer, String> (){
         @Override
         public String join(Integer first, Integer second) {
@@ -190,9 +190,9 @@ orangeStream.join(greenStream)
 {{< tab "Scala" >}}
 
 ```scala
-import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
- 
+import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows
+import java.time.Duration
+
 ...
 
 val orangeStream: DataStream[Integer] = ...
@@ -201,7 +201,7 @@ val greenStream: DataStream[Integer] = ...
 orangeStream.join(greenStream)
     .where(elem => /* select key */)
     .equalTo(elem => /* select key */)
-    .window(EventTimeSessionWindows.withGap(Time.milliseconds(1)))
+    .window(EventTimeSessionWindows.withGap(Duration.ofMillis(1)))
     .apply { (e1, e2) => e1 + "," + e2 }
 ```
 
@@ -216,7 +216,7 @@ This can also be expressed more formally as
 `b.timestamp ∈ [a.timestamp + lowerBound; a.timestamp + upperBound]` or 
 `a.timestamp + lowerBound <= b.timestamp <= a.timestamp + upperBound`
 
-where a and b are elements of A and B that share a common key. Both the lower and upper bound can be either negative or positive as long as as the lower bound is always smaller or equal to the upper bound. The interval join currently only performs inner joins.
+where a and b are elements of A and B that share a common key. Both the lower and upper bound can be either negative or positive as long as the lower bound is always smaller or equal to the upper bound. The interval join currently only performs inner joins.
 
 When a pair of elements are passed to the `ProcessJoinFunction`, they will be assigned with the larger timestamp (which can be accessed via the `ProcessJoinFunction.Context`) of the two elements.
 
@@ -226,7 +226,7 @@ The interval join currently only supports event time.
 
 {{< img src="/fig/interval-join.svg" width="80%" >}} 
 
-In the example above, we join two streams 'orange' and 'green' with a lower bound of -2 milliseconds and an upper bound of +1 millisecond. Be default, these boundaries are inclusive, but `.lowerBoundExclusive()` and `.upperBoundExclusive` can be applied to change the behaviour.
+In the example above, we join two streams 'orange' and 'green' with a lower bound of -2 milliseconds and an upper bound of +1 millisecond. Be default, these boundaries are inclusive, but `.lowerBoundExclusive()` and `.upperBoundExclusive()` can be applied to change the behaviour.
 
 Using the more formal notation again this will translate to 
 
@@ -240,22 +240,22 @@ as indicated by the triangles.
 ```java
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.streaming.api.functions.co.ProcessJoinFunction;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import java.time.Duration;
 
 ...
 
-DataStream<Integer> orangeStream = ...
-DataStream<Integer> greenStream = ...
+DataStream<Integer> orangeStream = ...;
+DataStream<Integer> greenStream = ...;
 
 orangeStream
     .keyBy(<KeySelector>)
     .intervalJoin(greenStream.keyBy(<KeySelector>))
-    .between(Time.milliseconds(-2), Time.milliseconds(1))
-    .process (new ProcessJoinFunction<Integer, Integer, String(){
+    .between(Duration.ofMillis(-2), Duration.ofMillis(1))
+    .process (new ProcessJoinFunction<Integer, Integer, String>(){
 
         @Override
         public void processElement(Integer left, Integer right, Context ctx, Collector<String> out) {
-            out.collect(first + "," + second);
+            out.collect(left + "," + right);
         }
     });
 ```
@@ -264,8 +264,8 @@ orangeStream
 {{< tab "Scala" >}}
 
 ```scala
-import org.apache.flink.streaming.api.functions.co.ProcessJoinFunction;
-import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.functions.co.ProcessJoinFunction
+import java.time.Duration
 
 ...
 
@@ -275,13 +275,13 @@ val greenStream: DataStream[Integer] = ...
 orangeStream
     .keyBy(elem => /* select key */)
     .intervalJoin(greenStream.keyBy(elem => /* select key */))
-    .between(Time.milliseconds(-2), Time.milliseconds(1))
+    .between(Duration.ofMillis(-2), Duration.ofMillis(1))
     .process(new ProcessJoinFunction[Integer, Integer, String] {
         override def processElement(left: Integer, right: Integer, ctx: ProcessJoinFunction[Integer, Integer, String]#Context, out: Collector[String]): Unit = {
-         out.collect(left + "," + right); 
+            out.collect(left + "," + right)
         }
-      });
-    });
+    })
+
 ```
 
 {{< /tab >}}

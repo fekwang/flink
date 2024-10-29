@@ -18,7 +18,7 @@
 
 package org.apache.flink.table.planner.functions;
 
-import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.EnvironmentSettings;
 import org.apache.flink.table.api.Table;
@@ -28,189 +28,108 @@ import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.api.internal.TableEnvironmentInternal;
 import org.apache.flink.table.catalog.DataTypeFactory;
 import org.apache.flink.table.expressions.Expression;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinition;
 import org.apache.flink.table.functions.UserDefinedFunction;
+import org.apache.flink.table.operations.ProjectQueryOperation;
 import org.apache.flink.table.types.AbstractDataType;
 import org.apache.flink.table.types.DataType;
-import org.apache.flink.test.util.MiniClusterWithClientResource;
+import org.apache.flink.test.junit5.MiniClusterExtension;
 import org.apache.flink.types.Row;
+import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.Preconditions;
 
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameter;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.function.Executable;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
-import static org.apache.flink.core.testutils.FlinkMatchers.containsCause;
-import static org.apache.flink.core.testutils.FlinkMatchers.containsMessage;
-import static org.hamcrest.CoreMatchers.containsString;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static java.util.Collections.emptyList;
+import static java.util.Collections.singletonList;
+import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
+import static org.apache.flink.table.api.Expressions.row;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 /**
- * Test base for testing {@link BuiltInFunctionDefinition}.
+ * Test interface implementing the logic to execute tests for {@link BuiltInFunctionDefinition}.
+ *
+ * <p>To create a new set of test cases, just create a subclass and implement the method {@link
+ * #getTestSetSpecs()}.
  *
  * <p>Note: This test base is not the most efficient one. It currently checks the full pipeline
  * end-to-end. If the testing time is too long, we can change the underlying implementation easily
- * without touching the defined {@link TestSpec}s.
+ * without touching the defined {@link TestSetSpec}s.
  */
-@RunWith(Parameterized.class)
-public abstract class BuiltInFunctionTestBase {
+@Execution(ExecutionMode.CONCURRENT)
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+abstract class BuiltInFunctionTestBase {
 
-    @ClassRule
-    public static MiniClusterWithClientResource miniClusterResource =
-            new MiniClusterWithClientResource(
-                    new MiniClusterResourceConfiguration.Builder()
-                            .setNumberTaskManagers(1)
-                            .setNumberSlotsPerTaskManager(1)
-                            .build());
+    @RegisterExtension
+    public static final MiniClusterExtension MINI_CLUSTER_EXTENSION = new MiniClusterExtension();
 
-    @Parameter public TestSpec testSpec;
+    Configuration getConfiguration() {
+        return new Configuration();
+    }
 
-    @Test
-    public void testFunction() {
-        final TableEnvironment env =
-                TableEnvironment.create(EnvironmentSettings.newInstance().build());
+    abstract Stream<TestSetSpec> getTestSetSpecs();
 
-        testSpec.functions.forEach(f -> env.createTemporarySystemFunction(f.getSimpleName(), f));
+    private Stream<TestCase> getTestCases() {
+        return this.getTestSetSpecs()
+                .flatMap(testSpec -> testSpec.getTestCases(this.getConfiguration()));
+    }
 
-        final DataTypeFactory dataTypeFactory =
-                ((TableEnvironmentInternal) env).getCatalogManager().getDataTypeFactory();
-
-        final Table inputTable;
-        if (testSpec.fieldDataTypes == null) {
-            inputTable = env.fromValues(Row.of(testSpec.fieldData));
-        } else {
-            final DataTypes.UnresolvedField[] fields =
-                    IntStream.range(0, testSpec.fieldDataTypes.length)
-                            .mapToObj(i -> DataTypes.FIELD("f" + i, testSpec.fieldDataTypes[i]))
-                            .toArray(DataTypes.UnresolvedField[]::new);
-            inputTable = env.fromValues(DataTypes.ROW(fields), Row.of(testSpec.fieldData));
-        }
-
-        for (TestItem testItem : testSpec.testItems) {
-            try {
-                if (testItem instanceof TableApiResultTestItem) {
-                    testTableApiResult(
-                            dataTypeFactory, inputTable, ((TableApiResultTestItem) testItem));
-                } else if (testItem instanceof TableApiErrorTestItem) {
-                    testTableApiError(inputTable, ((TableApiErrorTestItem) testItem));
-                } else if (testItem instanceof SqlResultTestItem) {
-                    testSqlResult(dataTypeFactory, env, inputTable, ((SqlResultTestItem) testItem));
-                } else if (testItem instanceof SqlErrorTestItem) {
-                    testSqlError(env, inputTable, ((SqlErrorTestItem) testItem));
-                }
-            } catch (Throwable t) {
-                throw new AssertionError("Failing test item: " + testItem.toString(), t);
-            }
-        }
+    @ParameterizedTest
+    @MethodSource("getTestCases")
+    final void test(TestCase testCase) throws Throwable {
+        testCase.execute();
     }
 
     // --------------------------------------------------------------------------------------------
-    // Test utilities
+    // Test model
     // --------------------------------------------------------------------------------------------
 
-    private static void testTableApiResult(
-            DataTypeFactory dataTypeFactory, Table inputTable, TableApiResultTestItem testItem) {
-        testResult(dataTypeFactory, inputTable.select(testItem.expression), testItem);
-    }
+    /** Single test case. */
+    static class TestCase implements Executable {
 
-    private static void testTableApiError(Table inputTable, TableApiErrorTestItem testItem) {
-        try {
-            final TableResult tableResult = inputTable.select(testItem.expression).execute();
-            if (testItem.expectedDuringValidation) {
-                fail("Error expected: " + testItem.errorMessage);
-            }
+        private final String name;
+        private final Executable executable;
 
-            try {
-                tableResult.await();
-                fail("Error expected: " + testItem.errorMessage);
-            } catch (AssertionError e) {
-                throw e;
-            } catch (Throwable t) {
-                assertThat(t, containsMessage(testItem.errorMessage));
-            }
-        } catch (AssertionError e) {
-            throw e;
-        } catch (Throwable t) {
-            assertThat(t, containsCause(new ValidationException(testItem.errorMessage)));
+        TestCase(String name, Executable executable) {
+            this.name = name;
+            this.executable = executable;
         }
-    }
 
-    private static void testSqlResult(
-            DataTypeFactory dataTypeFactory,
-            TableEnvironment env,
-            Table inputTable,
-            SqlResultTestItem testItem) {
-        testResult(
-                dataTypeFactory,
-                env.sqlQuery("SELECT " + testItem.expression + " FROM " + inputTable),
-                testItem);
-    }
-
-    private static void testSqlError(
-            TableEnvironment env, Table inputTable, SqlErrorTestItem testItem) {
-        try {
-            final TableResult tableResult =
-                    env.sqlQuery("SELECT " + testItem.expression + " FROM " + inputTable).execute();
-            if (testItem.expectedDuringValidation) {
-                fail("Error expected: " + testItem.errorMessage);
-            }
-
-            try {
-                tableResult.await();
-                fail("Error expected: " + testItem.errorMessage);
-            } catch (AssertionError e) {
-                throw e;
-            } catch (Throwable t) {
-                assertThat(t, containsMessage(testItem.errorMessage));
-            }
-        } catch (AssertionError e) {
-            throw e;
-        } catch (Throwable t) {
-            assertTrue(t instanceof ValidationException);
-            assertThat(t.getMessage(), containsString(testItem.errorMessage));
+        @Override
+        public void execute() throws Throwable {
+            this.executable.execute();
         }
-    }
 
-    private static void testResult(
-            DataTypeFactory dataTypeFactory, Table resultTable, ResultTestItem testItem) {
-        final DataType expectedDataType = dataTypeFactory.createDataType(testItem.dataType);
-        final TableResult result = resultTable.execute();
-        final Iterator<Row> iterator = result.collect();
-
-        assertTrue(iterator.hasNext());
-
-        final Row row = iterator.next();
-
-        assertFalse("No more rows expected.", iterator.hasNext());
-
-        assertEquals("Only 1 column expected.", 1, row.getArity());
-
-        assertEquals(
-                "Logical type doesn't match.",
-                expectedDataType.getLogicalType(),
-                result.getResolvedSchema().getColumnDataTypes().get(0).getLogicalType());
-
-        assertEquals("Result doesn't match.", testItem.result, row.getField(0));
+        @Override
+        public String toString() {
+            return name;
+        }
     }
 
     /**
      * Test specification for executing a {@link BuiltInFunctionDefinition} with different
      * parameters on a set of fields.
      */
-    protected static class TestSpec {
+    static class TestSetSpec {
 
         private final @Nullable BuiltInFunctionDefinition definition;
 
@@ -220,77 +139,131 @@ public abstract class BuiltInFunctionTestBase {
 
         private final List<TestItem> testItems;
 
-        private Object[] fieldData;
+        private @Nullable Object[] fieldData;
 
         private @Nullable AbstractDataType<?>[] fieldDataTypes;
 
-        private TestSpec(BuiltInFunctionDefinition definition, @Nullable String description) {
+        private TestSetSpec(BuiltInFunctionDefinition definition, @Nullable String description) {
             this.definition = definition;
             this.description = description;
             this.functions = new ArrayList<>();
             this.testItems = new ArrayList<>();
         }
 
-        static TestSpec forFunction(BuiltInFunctionDefinition definition) {
+        static TestSetSpec forFunction(BuiltInFunctionDefinition definition) {
             return forFunction(definition, null);
         }
 
-        static TestSpec forFunction(BuiltInFunctionDefinition definition, String description) {
-            return new TestSpec(Preconditions.checkNotNull(definition), description);
+        static TestSetSpec forFunction(BuiltInFunctionDefinition definition, String description) {
+            return new TestSetSpec(Preconditions.checkNotNull(definition), description);
         }
 
-        static TestSpec forExpression(String description) {
-            return new TestSpec(null, Preconditions.checkNotNull(description));
+        static TestSetSpec forExpression(String description) {
+            return new TestSetSpec(null, Preconditions.checkNotNull(description));
         }
 
-        TestSpec onFieldsWithData(Object... fieldData) {
+        TestSetSpec onFieldsWithData(Object... fieldData) {
             this.fieldData = fieldData;
             return this;
         }
 
-        TestSpec andDataTypes(AbstractDataType<?>... fieldDataType) {
+        TestSetSpec andDataTypes(AbstractDataType<?>... fieldDataType) {
             this.fieldDataTypes = fieldDataType;
             return this;
         }
 
-        TestSpec withFunction(Class<? extends UserDefinedFunction> functionClass) {
+        TestSetSpec withFunction(Class<? extends UserDefinedFunction> functionClass) {
             // the function will be registered under the class simple name
             this.functions.add(functionClass);
             return this;
         }
 
-        TestSpec testTableApiResult(
+        TestSetSpec testTableApiResult(
                 Expression expression, Object result, AbstractDataType<?> dataType) {
+            return testTableApiResult(
+                    singletonList(expression), singletonList(result), singletonList(dataType));
+        }
+
+        TestSetSpec testTableApiResult(Expression expression, AbstractDataType<?> dataType) {
+            return testTableApiResult(
+                    singletonList(expression), emptyList(), singletonList(dataType));
+        }
+
+        TestSetSpec testTableApiResult(
+                List<Expression> expression,
+                List<Object> result,
+                List<AbstractDataType<?>> dataType) {
             testItems.add(new TableApiResultTestItem(expression, result, dataType));
             return this;
         }
 
-        TestSpec testTableApiValidationError(Expression expression, String errorMessage) {
-            testItems.add(new TableApiErrorTestItem(expression, errorMessage, true));
+        TestSetSpec testTableApiValidationError(Expression expression, String errorMessage) {
+            testItems.add(
+                    new TableApiErrorTestItem(
+                            expression, ValidationException.class, errorMessage, true));
             return this;
         }
 
-        TestSpec testTableApiRuntimeError(Expression expression, String errorMessage) {
-            testItems.add(new TableApiErrorTestItem(expression, errorMessage, false));
+        TestSetSpec testTableApiRuntimeError(Expression expression, String errorMessage) {
+            testItems.add(
+                    new TableApiErrorTestItem(expression, Throwable.class, errorMessage, false));
             return this;
         }
 
-        TestSpec testSqlResult(String expression, Object result, AbstractDataType<?> dataType) {
+        TestSetSpec testTableApiRuntimeError(
+                Expression expression, Class<? extends Throwable> exceptionError) {
+            testItems.add(new TableApiErrorTestItem(expression, exceptionError, null, false));
+            return this;
+        }
+
+        TestSetSpec testTableApiRuntimeError(
+                Expression expression,
+                Class<? extends Throwable> exceptionError,
+                String errorMessage) {
+            testItems.add(
+                    new TableApiErrorTestItem(expression, exceptionError, errorMessage, false));
+            return this;
+        }
+
+        TestSetSpec testSqlResult(String expression, Object result, AbstractDataType<?> dataType) {
+            return testSqlResult(expression, singletonList(result), singletonList(dataType));
+        }
+
+        TestSetSpec testSqlResult(String expression, AbstractDataType<?> dataType) {
+            return testSqlResult(expression, emptyList(), singletonList(dataType));
+        }
+
+        TestSetSpec testSqlResult(
+                String expression, List<Object> result, List<AbstractDataType<?>> dataType) {
             testItems.add(new SqlResultTestItem(expression, result, dataType));
             return this;
         }
 
-        TestSpec testSqlValidationError(String expression, String errorMessage) {
-            testItems.add(new SqlErrorTestItem(expression, errorMessage, true));
+        TestSetSpec testSqlValidationError(String expression, String errorMessage) {
+            testItems.add(
+                    new SqlErrorTestItem(
+                            expression, ValidationException.class, errorMessage, true));
             return this;
         }
 
-        TestSpec testSqlRuntimeError(String expression, String errorMessage) {
-            testItems.add(new SqlErrorTestItem(expression, errorMessage, false));
+        TestSetSpec testSqlRuntimeError(String expression, String errorMessage) {
+            testItems.add(new SqlErrorTestItem(expression, Throwable.class, errorMessage, false));
             return this;
         }
 
-        TestSpec testResult(
+        TestSetSpec testSqlRuntimeError(
+                String expression, Class<? extends Throwable> exceptionError) {
+            testItems.add(new SqlErrorTestItem(expression, exceptionError, null, false));
+            return this;
+        }
+
+        TestSetSpec testSqlRuntimeError(
+                String expression, Class<? extends Throwable> exceptionError, String errorMessage) {
+            testItems.add(new SqlErrorTestItem(expression, exceptionError, errorMessage, false));
+            return this;
+        }
+
+        TestSetSpec testResult(
                 Expression expression,
                 String sqlExpression,
                 Object result,
@@ -298,15 +271,90 @@ public abstract class BuiltInFunctionTestBase {
             return testResult(expression, sqlExpression, result, dataType, dataType);
         }
 
-        TestSpec testResult(
+        TestSetSpec testResult(ResultSpec... resultSpecs) {
+            final int cols = resultSpecs.length;
+            final List<Expression> expressions = new ArrayList<>(cols);
+            final List<String> sqlExpressions = new ArrayList<>(cols);
+            final List<Object> results = new ArrayList<>(cols);
+            final List<AbstractDataType<?>> tableApiDataTypes = new ArrayList<>(cols);
+            final List<AbstractDataType<?>> sqlDataTypes = new ArrayList<>(cols);
+
+            for (ResultSpec resultSpec : resultSpecs) {
+                expressions.add(resultSpec.tableApiExpression);
+                sqlExpressions.add(resultSpec.sqlExpression);
+                results.add(resultSpec.result);
+                tableApiDataTypes.add(resultSpec.tableApiDataType);
+                sqlDataTypes.add(resultSpec.sqlDataType);
+            }
+            return testResult(
+                    expressions, sqlExpressions, results, tableApiDataTypes, sqlDataTypes);
+        }
+
+        TestSetSpec testResult(
                 Expression expression,
                 String sqlExpression,
                 Object result,
                 AbstractDataType<?> tableApiDataType,
                 AbstractDataType<?> sqlDataType) {
+            return testResult(
+                    singletonList(expression),
+                    singletonList(sqlExpression),
+                    singletonList(result),
+                    singletonList(tableApiDataType),
+                    singletonList(sqlDataType));
+        }
+
+        TestSetSpec testResult(
+                List<Expression> expression,
+                List<String> sqlExpression,
+                List<Object> result,
+                List<AbstractDataType<?>> tableApiDataType,
+                List<AbstractDataType<?>> sqlDataType) {
             testItems.add(new TableApiResultTestItem(expression, result, tableApiDataType));
-            testItems.add(new SqlResultTestItem(sqlExpression, result, sqlDataType));
+            testItems.add(new TableApiSqlResultTestItem(expression, result, tableApiDataType));
+            testItems.add(
+                    new SqlResultTestItem(String.join(",", sqlExpression), result, sqlDataType));
             return this;
+        }
+
+        Stream<TestCase> getTestCases(Configuration configuration) {
+            return testItems.stream().map(testItem -> getTestCase(configuration, testItem));
+        }
+
+        private TestCase getTestCase(Configuration configuration, TestItem testItem) {
+            return new TestCase(
+                    testItem.toString(),
+                    () -> {
+                        final TableEnvironmentInternal env =
+                                (TableEnvironmentInternal)
+                                        TableEnvironment.create(
+                                                EnvironmentSettings.newInstance().build());
+                        env.getConfig().addConfiguration(configuration);
+
+                        functions.forEach(
+                                f -> env.createTemporarySystemFunction(f.getSimpleName(), f));
+
+                        Preconditions.checkArgument(
+                                !(fieldData == null && fieldDataTypes != null),
+                                "The field data type is set but the field data is not.");
+                        final Table inputTable;
+                        if (fieldData == null) {
+                            inputTable = null;
+                        } else if (fieldDataTypes == null) {
+                            inputTable = env.fromValues(Row.of(fieldData));
+                        } else {
+                            final DataTypes.UnresolvedField[] fields =
+                                    IntStream.range(0, fieldDataTypes.length)
+                                            .mapToObj(
+                                                    i ->
+                                                            DataTypes.FIELD(
+                                                                    "f" + i, fieldDataTypes[i]))
+                                            .toArray(DataTypes.UnresolvedField[]::new);
+                            inputTable = env.fromValues(DataTypes.ROW(fields), Row.of(fieldData));
+                        }
+
+                        testItem.test(env, inputTable);
+                    });
         }
 
         @Override
@@ -317,50 +365,194 @@ public abstract class BuiltInFunctionTestBase {
     }
 
     private interface TestItem {
-        // marker interface
+        /**
+         * @param env The table environment for test to execute.
+         * @param inputTable The input table of this test that contains input data and data type. If
+         *     it is null, the test is not dependent on the input data.
+         */
+        void test(TableEnvironmentInternal env, @Nullable Table inputTable) throws Exception;
     }
 
-    private static class ResultTestItem implements TestItem {
-        final Object result;
-        final AbstractDataType<?> dataType;
+    private abstract static class ResultTestItem<T> implements TestItem {
+        final T expression;
+        final List<Object> results;
+        final List<AbstractDataType<?>> dataTypes;
 
-        ResultTestItem(Object result, AbstractDataType<?> dataType) {
-            this.result = result;
-            this.dataType = dataType;
+        ResultTestItem(T expression, List<Object> results, List<AbstractDataType<?>> dataTypes) {
+            this.expression = expression;
+            this.results = results;
+            this.dataTypes = dataTypes;
+        }
+
+        abstract Table query(TableEnvironment env, @Nullable Table inputTable);
+
+        @Override
+        public void test(TableEnvironmentInternal env, @Nullable Table inputTable)
+                throws Exception {
+            final Table resultTable = this.query(env, inputTable);
+
+            final List<DataType> expectedDataTypes =
+                    createDataTypes(env.getCatalogManager().getDataTypeFactory(), this.dataTypes);
+            final TableResult result = resultTable.execute();
+            try (final CloseableIterator<Row> iterator = result.collect()) {
+                assertThat(iterator).hasNext();
+
+                final Row row = iterator.next();
+
+                assertThat(iterator).as("No more rows expected.").isExhausted();
+
+                for (int i = 0; i < row.getArity(); i++) {
+                    if (!expectedDataTypes.isEmpty()) {
+                        assertThat(
+                                        result.getResolvedSchema()
+                                                .getColumnDataTypes()
+                                                .get(i)
+                                                .getLogicalType())
+                                .as(
+                                        "Logical type for spec [%d] of test [%s] doesn't match.",
+                                        i, this)
+                                .isEqualTo(expectedDataTypes.get(i).getLogicalType());
+                    }
+
+                    if (!this.results.isEmpty()) {
+                        assertThat(Row.of(row.getField(i)))
+                                .as("Result for spec [%d] of test [%s] doesn't match.", i, this)
+                                .isEqualTo(
+                                        // Use Row.equals() to enable equality for complex
+                                        // structure,
+                                        // i.e. byte[]
+                                        Row.of(this.results.get(i)));
+                    }
+                }
+            }
         }
     }
 
-    private static class ErrorTestItem implements TestItem {
+    private abstract static class ErrorTestItem<T> implements TestItem {
+        final T expression;
+        final Class<? extends Throwable> errorClass;
         final String errorMessage;
-        boolean expectedDuringValidation;
+        final boolean expectedDuringValidation;
 
-        ErrorTestItem(String errorMessage, boolean expectedDuringValidation) {
+        ErrorTestItem(
+                T expression,
+                Class<? extends Throwable> errorClass,
+                String errorMessage,
+                boolean expectedDuringValidation) {
+            Preconditions.checkState(errorClass != null || errorMessage != null);
+            this.expression = expression;
+            this.errorClass = errorClass;
             this.errorMessage = errorMessage;
             this.expectedDuringValidation = expectedDuringValidation;
         }
+
+        abstract Table query(TableEnvironment env, @Nullable Table inputTable);
+
+        Consumer<? super Throwable> errorMatcher() {
+            if (errorClass != null && errorMessage != null) {
+                return anyCauseMatches(errorClass, errorMessage);
+            }
+            if (errorMessage != null) {
+                return anyCauseMatches(errorMessage);
+            }
+            return anyCauseMatches(errorClass);
+        }
+
+        @Override
+        public void test(TableEnvironmentInternal env, @Nullable Table inputTable) {
+            AtomicReference<TableResult> tableResult = new AtomicReference<>();
+
+            Throwable t =
+                    catchThrowable(() -> tableResult.set(this.query(env, inputTable).execute()));
+
+            if (this.expectedDuringValidation) {
+                assertThat(t)
+                        .as("Expected a validation exception")
+                        .isNotNull()
+                        .satisfies(this.errorMatcher());
+                return;
+            } else {
+                assertThat(t).as("Error while validating the query").isNull();
+            }
+
+            assertThatThrownBy(() -> tableResult.get().await())
+                    .isNotNull()
+                    .satisfies(this.errorMatcher());
+        }
     }
 
-    private static class TableApiResultTestItem extends ResultTestItem {
-        final Expression expression;
+    private static class TableApiResultTestItem extends ResultTestItem<List<Expression>> {
 
-        TableApiResultTestItem(Expression expression, Object result, AbstractDataType<?> dataType) {
-            super(result, dataType);
-            this.expression = expression;
+        TableApiResultTestItem(
+                List<Expression> expressions,
+                List<Object> results,
+                List<AbstractDataType<?>> dataTypes) {
+            super(expressions, results, dataTypes);
+        }
+
+        @Override
+        Table query(TableEnvironment env, @Nullable Table inputTable) {
+            if (inputTable != null) {
+                return inputTable.select(expression.toArray(new Expression[] {}));
+            } else {
+                // use a mock collection table with row "0" to avoid pruning the project
+                // node with expression by PruneEmptyRules.PROJECT_INSTANCE
+                return env.fromValues(row(0)).select(expression.toArray(new Expression[] {}));
+            }
         }
 
         @Override
         public String toString() {
-            return "[API] " + expression.asSummaryString();
+            return "[API] "
+                    + expression.stream()
+                            .map(Expression::asSummaryString)
+                            .collect(Collectors.joining(", "));
         }
     }
 
-    private static class TableApiErrorTestItem extends ErrorTestItem {
-        final Expression expression;
+    private static class TableApiSqlResultTestItem extends ResultTestItem<List<Expression>> {
+
+        TableApiSqlResultTestItem(
+                List<Expression> expressions,
+                List<Object> results,
+                List<AbstractDataType<?>> dataTypes) {
+            super(expressions, results, dataTypes);
+        }
+
+        @Override
+        Table query(TableEnvironment env, Table inputTable) {
+            final Table select = inputTable.select(expression.toArray(new Expression[] {}));
+            final ProjectQueryOperation projectQueryOperation =
+                    (ProjectQueryOperation) select.getQueryOperation();
+            final String exprAsSerializableString =
+                    projectQueryOperation.getProjectList().stream()
+                            .map(ResolvedExpression::asSerializableString)
+                            .collect(Collectors.joining(", "));
+            return env.sqlQuery("SELECT " + exprAsSerializableString + " FROM " + inputTable);
+        }
+
+        @Override
+        public String toString() {
+            return "[API as SQL] "
+                    + expression.stream()
+                            .map(Expression::asSummaryString)
+                            .collect(Collectors.joining(", "));
+        }
+    }
+
+    private static class TableApiErrorTestItem extends ErrorTestItem<Expression> {
 
         TableApiErrorTestItem(
-                Expression expression, String errorMessage, boolean expectedDuringValidation) {
-            super(errorMessage, expectedDuringValidation);
-            this.expression = expression;
+                Expression expression,
+                Class<? extends Throwable> errorClass,
+                String errorMessage,
+                boolean expectedDuringValidation) {
+            super(expression, errorClass, errorMessage, expectedDuringValidation);
+        }
+
+        @Override
+        Table query(TableEnvironment env, Table inputTable) {
+            return inputTable.select(expression);
         }
 
         @Override
@@ -369,12 +561,20 @@ public abstract class BuiltInFunctionTestBase {
         }
     }
 
-    private static class SqlResultTestItem extends ResultTestItem {
-        final String expression;
+    private static class SqlResultTestItem extends ResultTestItem<String> {
 
-        SqlResultTestItem(String expression, Object result, AbstractDataType<?> dataType) {
-            super(result, dataType);
-            this.expression = expression;
+        SqlResultTestItem(
+                String sqlExpression, List<Object> result, List<AbstractDataType<?>> dataType) {
+            super(sqlExpression, result, dataType);
+        }
+
+        @Override
+        Table query(TableEnvironment env, @Nullable Table inputTable) {
+            if (inputTable != null) {
+                return env.sqlQuery("SELECT " + expression + " FROM " + inputTable);
+            } else {
+                return env.sqlQuery("SELECT " + expression);
+            }
         }
 
         @Override
@@ -383,18 +583,70 @@ public abstract class BuiltInFunctionTestBase {
         }
     }
 
-    private static class SqlErrorTestItem extends ErrorTestItem {
-        final String expression;
+    private static class SqlErrorTestItem extends ErrorTestItem<String> {
 
         private SqlErrorTestItem(
-                String expression, String errorMessage, boolean expectedDuringValidation) {
-            super(errorMessage, expectedDuringValidation);
-            this.expression = expression;
+                String expression,
+                Class<? extends Throwable> errorClass,
+                String errorMessage,
+                boolean expectedDuringValidation) {
+            super(expression, errorClass, errorMessage, expectedDuringValidation);
+        }
+
+        @Override
+        Table query(TableEnvironment env, Table inputTable) {
+            return env.sqlQuery("SELECT " + expression + " FROM " + inputTable);
         }
 
         @Override
         public String toString() {
             return "[SQL] " + expression;
         }
+    }
+
+    static List<DataType> createDataTypes(
+            DataTypeFactory dataTypeFactory, List<AbstractDataType<?>> dataTypes) {
+        return dataTypes.stream().map(dataTypeFactory::createDataType).collect(Collectors.toList());
+    }
+
+    /** Helper POJO to store test parameters. */
+    static class ResultSpec {
+
+        final Expression tableApiExpression;
+        final String sqlExpression;
+        final Object result;
+        final AbstractDataType<?> tableApiDataType;
+        final AbstractDataType<?> sqlDataType;
+
+        private ResultSpec(
+                Expression tableApiExpression,
+                String sqlExpression,
+                Object result,
+                AbstractDataType<?> tableApiDataType,
+                AbstractDataType<?> sqlQueryDataType) {
+            this.tableApiExpression = tableApiExpression;
+            this.sqlExpression = sqlExpression;
+            this.result = result;
+            this.tableApiDataType = tableApiDataType;
+            this.sqlDataType = sqlQueryDataType;
+        }
+    }
+
+    public static ResultSpec resultSpec(
+            Expression tableApiExpression,
+            String sqlExpression,
+            Object result,
+            AbstractDataType<?> dataType) {
+        return resultSpec(tableApiExpression, sqlExpression, result, dataType, dataType);
+    }
+
+    public static ResultSpec resultSpec(
+            Expression tableApiExpression,
+            String sqlExpression,
+            Object result,
+            AbstractDataType<?> tableApiDataType,
+            AbstractDataType<?> sqlQueryDataType) {
+        return new ResultSpec(
+                tableApiExpression, sqlExpression, result, tableApiDataType, sqlQueryDataType);
     }
 }

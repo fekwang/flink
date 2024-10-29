@@ -29,6 +29,7 @@ import org.apache.flink.runtime.metrics.groups.ResourceManagerMetricGroup;
 import org.apache.flink.runtime.metrics.groups.SlotManagerMetricGroup;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.rpc.RpcService;
+import org.apache.flink.runtime.security.token.DelegationTokenManager;
 import org.apache.flink.util.ConfigurationException;
 
 import org.slf4j.Logger;
@@ -50,9 +51,11 @@ public abstract class ResourceManagerFactory<T extends ResourceIDRetrievable> {
 
     public ResourceManagerProcessContext createResourceManagerProcessContext(
             Configuration configuration,
+            ResourceID resourceId,
             RpcService rpcService,
             HighAvailabilityServices highAvailabilityServices,
             HeartbeatServices heartbeatServices,
+            DelegationTokenManager delegationTokenManager,
             FatalErrorHandler fatalErrorHandler,
             ClusterInformation clusterInformation,
             @Nullable String webInterfaceUrl,
@@ -61,73 +64,60 @@ public abstract class ResourceManagerFactory<T extends ResourceIDRetrievable> {
             Executor ioExecutor)
             throws ConfigurationException {
 
-        final ResourceManagerMetricGroup resourceManagerMetricGroup =
-                ResourceManagerMetricGroup.create(metricRegistry, hostname);
-        final SlotManagerMetricGroup slotManagerMetricGroup =
-                SlotManagerMetricGroup.create(metricRegistry, hostname);
-
-        final Configuration runtimeServicesAndRmConfig =
-                getEffectiveConfigurationForResourceManagerAndRuntimeServices(configuration);
-
         final ResourceManagerRuntimeServicesConfiguration runtimeServiceConfig =
-                createResourceManagerRuntimeServicesConfiguration(runtimeServicesAndRmConfig);
+                createResourceManagerRuntimeServicesConfiguration(configuration);
 
-        final Configuration rmConfig =
-                getEffectiveConfigurationForResourceManager(runtimeServicesAndRmConfig);
+        final Configuration rmConfig = getEffectiveConfigurationForResourceManager(configuration);
 
         return new ResourceManagerProcessContext(
                 rmConfig,
+                resourceId,
                 runtimeServiceConfig,
                 rpcService,
                 highAvailabilityServices,
                 heartbeatServices,
+                delegationTokenManager,
                 fatalErrorHandler,
                 clusterInformation,
                 webInterfaceUrl,
-                resourceManagerMetricGroup,
-                slotManagerMetricGroup,
+                metricRegistry,
+                hostname,
                 ioExecutor);
     }
 
     public ResourceManager<T> createResourceManager(
-            ResourceManagerProcessContext context, UUID leaderSessionId, ResourceID resourceId)
-            throws Exception {
+            ResourceManagerProcessContext context, UUID leaderSessionId) throws Exception {
 
         final ResourceManagerRuntimeServices resourceManagerRuntimeServices =
                 createResourceManagerRuntimeServices(
                         context.getRmRuntimeServicesConfig(),
                         context.getRpcService(),
                         context.getHighAvailabilityServices(),
-                        context.getSlotManagerMetricGroup());
+                        SlotManagerMetricGroup.create(
+                                context.getMetricRegistry(), context.getHostname()));
 
         return createResourceManager(
                 context.getRmConfig(),
-                resourceId,
+                context.getResourceId(),
                 context.getRpcService(),
                 leaderSessionId,
                 context.getHeartbeatServices(),
+                context.getDelegationTokenManager(),
                 context.getFatalErrorHandler(),
                 context.getClusterInformation(),
                 context.getWebInterfaceUrl(),
-                context.getResourceManagerMetricGroup(),
+                ResourceManagerMetricGroup.create(
+                        context.getMetricRegistry(), context.getHostname()),
                 resourceManagerRuntimeServices,
                 context.getIoExecutor());
     }
 
-    /**
-     * Configuration changes in this method will be visible to both {@link ResourceManager} and
-     * {@link ResourceManagerRuntimeServices}. This can be overwritten by {@link
-     * #getEffectiveConfigurationForResourceManager}.
-     */
-    protected Configuration getEffectiveConfigurationForResourceManagerAndRuntimeServices(
-            final Configuration configuration) {
-        return configuration;
+    /** This indicates whether the process should be terminated after losing leadership. */
+    protected boolean supportMultiLeaderSession() {
+        return true;
     }
 
-    /**
-     * Configuration changes in this method will be visible to only {@link ResourceManager}. This
-     * can overwrite {@link #getEffectiveConfigurationForResourceManagerAndRuntimeServices}.
-     */
+    /** Configuration changes in this method will be visible to only {@link ResourceManager}. */
     protected Configuration getEffectiveConfigurationForResourceManager(
             final Configuration configuration) {
         return configuration;
@@ -139,6 +129,7 @@ public abstract class ResourceManagerFactory<T extends ResourceIDRetrievable> {
             RpcService rpcService,
             UUID leaderSessionId,
             HeartbeatServices heartbeatServices,
+            DelegationTokenManager delegationTokenManager,
             FatalErrorHandler fatalErrorHandler,
             ClusterInformation clusterInformation,
             @Nullable String webInterfaceUrl,

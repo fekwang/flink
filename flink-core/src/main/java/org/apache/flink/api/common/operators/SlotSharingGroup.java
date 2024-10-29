@@ -34,7 +34,7 @@ import java.util.Optional;
 import static org.apache.flink.util.Preconditions.checkArgument;
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
-/** Describe the name and the the different resource components of a slot sharing group. */
+/** Describe the name and the different resource components of a slot sharing group. */
 @PublicEvolving
 public class SlotSharingGroup implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -135,6 +135,37 @@ public class SlotSharingGroup implements Serializable {
         result = 31 * result + Objects.hashCode(managedMemory);
         result = 31 * result + externalResources.hashCode();
         return result;
+    }
+
+    /**
+     * Convert a {@link org.apache.flink.api.common.SlotSharingGroup} to {@link SlotSharingGroup}.
+     */
+    public static SlotSharingGroup from(org.apache.flink.api.common.SlotSharingGroup group) {
+        if (group.getCpuCores() != null && group.getTaskHeapMemory() != null) {
+            MemorySize taskOffHeapMemory =
+                    group.getTaskOffHeapMemory() == null
+                            ? MemorySize.ZERO
+                            : group.getTaskOffHeapMemory();
+            MemorySize managedMemory =
+                    group.getManagedMemory() == null ? MemorySize.ZERO : group.getManagedMemory();
+            return new SlotSharingGroup(
+                    group.getName(),
+                    new CPUResource(group.getCpuCores()),
+                    group.getTaskHeapMemory(),
+                    taskOffHeapMemory,
+                    managedMemory,
+                    group.getExternalResources());
+        } else if (group.getCpuCores() != null
+                || group.getTaskHeapMemory() != null
+                || group.getTaskOffHeapMemory() != null
+                || group.getManagedMemory() != null
+                || !group.getExternalResources().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "The cpu cores and task heap memory are required when specifying the resource of a slot sharing group. "
+                            + "You need to explicitly configure them with positive value.");
+        } else {
+            return new SlotSharingGroup(group.getName());
+        }
     }
 
     /** Builder for the {@link SlotSharingGroup}. */

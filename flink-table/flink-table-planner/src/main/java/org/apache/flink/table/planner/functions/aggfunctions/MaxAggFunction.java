@@ -21,6 +21,7 @@ package org.apache.flink.table.planner.functions.aggfunctions;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.UnresolvedReferenceExpression;
+import org.apache.flink.table.functions.DeclarativeAggregateFunction;
 import org.apache.flink.table.types.DataType;
 import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LocalZonedTimestampType;
@@ -35,7 +36,8 @@ import static org.apache.flink.table.planner.expressions.ExpressionBuilder.nullO
 
 /** built-in max aggregate function. */
 public abstract class MaxAggFunction extends DeclarativeAggregateFunction {
-    private UnresolvedReferenceExpression max = unresolvedRef("max");
+
+    private final UnresolvedReferenceExpression max = unresolvedRef("max");
 
     @Override
     public int operandCount() {
@@ -151,15 +153,15 @@ public abstract class MaxAggFunction extends DeclarativeAggregateFunction {
 
     /** Built-in Decimal Max aggregate function. */
     public static class DecimalMaxAggFunction extends MaxAggFunction {
-        private DecimalType decimalType;
+        private final DataType resultType;
 
         public DecimalMaxAggFunction(DecimalType decimalType) {
-            this.decimalType = decimalType;
+            this.resultType = DataTypes.DECIMAL(decimalType.getPrecision(), decimalType.getScale());
         }
 
         @Override
         public DataType getResultType() {
-            return DataTypes.DECIMAL(decimalType.getPrecision(), decimalType.getScale());
+            return resultType;
         }
     }
 

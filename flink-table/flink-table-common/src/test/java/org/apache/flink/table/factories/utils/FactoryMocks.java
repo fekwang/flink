@@ -19,6 +19,7 @@
 package org.apache.flink.table.factories.utils;
 
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.catalog.CatalogTable;
@@ -55,7 +56,12 @@ public final class FactoryMocks {
 
     public static DynamicTableSource createTableSource(
             ResolvedSchema schema, Map<String, String> options) {
-        return FactoryUtil.createTableSource(
+        return createTableSource(schema, options, new Configuration());
+    }
+
+    public static DynamicTableSource createTableSource(
+            ResolvedSchema schema, Map<String, String> options, ReadableConfig readableConfig) {
+        return FactoryUtil.createDynamicTableSource(
                 null,
                 IDENTIFIER,
                 new ResolvedCatalogTable(
@@ -65,7 +71,8 @@ public final class FactoryMocks {
                                 Collections.emptyList(),
                                 options),
                         schema),
-                new Configuration(),
+                Collections.emptyMap(),
+                readableConfig,
                 FactoryMocks.class.getClassLoader(),
                 false);
     }
@@ -77,7 +84,7 @@ public final class FactoryMocks {
 
     public static DynamicTableSink createTableSink(
             ResolvedSchema schema, List<String> partitionKeys, Map<String, String> options) {
-        return FactoryUtil.createTableSink(
+        return FactoryUtil.createDynamicTableSink(
                 null,
                 IDENTIFIER,
                 new ResolvedCatalogTable(
@@ -94,6 +101,13 @@ public final class FactoryMocks {
 
     public static DynamicTableFactory.Context createTableContext(
             ResolvedSchema schema, Map<String, String> options) {
+        return createTableContext(schema, options, Collections.emptyMap());
+    }
+
+    public static DynamicTableFactory.Context createTableContext(
+            ResolvedSchema schema,
+            Map<String, String> options,
+            Map<String, String> enrichmentOptions) {
         return new FactoryUtil.DefaultDynamicTableContext(
                 IDENTIFIER,
                 new ResolvedCatalogTable(
@@ -103,6 +117,7 @@ public final class FactoryMocks {
                                 Collections.emptyList(),
                                 options),
                         schema),
+                enrichmentOptions,
                 new Configuration(),
                 FactoryMocks.class.getClassLoader(),
                 false);

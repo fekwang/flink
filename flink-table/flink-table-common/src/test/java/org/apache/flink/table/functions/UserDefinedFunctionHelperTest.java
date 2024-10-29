@@ -22,32 +22,100 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.CatalogFunction;
 import org.apache.flink.table.catalog.FunctionLanguage;
+import org.apache.flink.table.resource.ResourceUri;
 import org.apache.flink.util.Collector;
 
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameter;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nullable;
 
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
 
-import static org.apache.flink.core.testutils.FlinkMatchers.containsCause;
-import static org.hamcrest.CoreMatchers.notNullValue;
-import static org.junit.Assert.assertThat;
+import static org.apache.flink.core.testutils.FlinkAssertions.anyCauseMatches;
+import static org.apache.flink.table.functions.UserDefinedFunctionHelper.instantiateFunction;
+import static org.apache.flink.table.functions.UserDefinedFunctionHelper.isClassNameSerializable;
+import static org.apache.flink.table.functions.UserDefinedFunctionHelper.prepareInstance;
+import static org.apache.flink.table.functions.UserDefinedFunctionHelper.validateClass;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Tests for {@link UserDefinedFunctionHelper}. */
-@RunWith(Parameterized.class)
 @SuppressWarnings("unused")
-public class UserDefinedFunctionHelperTest {
+class UserDefinedFunctionHelperTest {
 
-    @Parameterized.Parameters
-    public static List<TestSpec> testData() {
+    @ParameterizedTest
+    @MethodSource("testSpecs")
+    void testInstantiation(TestSpec testSpec) {
+        final Supplier<UserDefinedFunction> supplier;
+        if (testSpec.functionClass != null) {
+            supplier = () -> instantiateFunction(testSpec.functionClass);
+        } else if (testSpec.catalogFunction != null) {
+            supplier =
+                    () ->
+                            instantiateFunction(
+                                    UserDefinedFunctionHelperTest.class.getClassLoader(),
+                                    new Configuration(),
+                                    "f",
+                                    testSpec.catalogFunction);
+        } else {
+            return;
+        }
+
+        if (testSpec.expectedErrorMessage != null) {
+            assertThatThrownBy(supplier::get)
+                    .satisfies(
+                            anyCauseMatches(
+                                    ValidationException.class, testSpec.expectedErrorMessage));
+        } else {
+            assertThat(supplier.get()).isNotNull();
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("testSpecs")
+    void testValidation(TestSpec testSpec) {
+        final Runnable runnable;
+        if (testSpec.functionClass != null) {
+            runnable = () -> validateClass(testSpec.functionClass);
+        } else if (testSpec.functionInstance != null) {
+            runnable = () -> prepareInstance(new Configuration(), testSpec.functionInstance);
+        } else {
+            return;
+        }
+
+        if (testSpec.expectedErrorMessage != null) {
+            assertThatThrownBy(runnable::run)
+                    .satisfies(
+                            anyCauseMatches(
+                                    ValidationException.class, testSpec.expectedErrorMessage));
+        } else {
+            runnable.run();
+        }
+    }
+
+    @Test
+    void testSerialization() {
+        assertThat(isClassNameSerializable(new ValidTableFunction())).isTrue();
+
+        assertThat(isClassNameSerializable(new ValidScalarFunction())).isTrue();
+
+        assertThat(isClassNameSerializable(new ParameterizedTableFunction(12))).isFalse();
+
+        assertThat(isClassNameSerializable(new StatefulScalarFunction())).isFalse();
+    }
+
+    // --------------------------------------------------------------------------------------------
+    // Test utilities
+    // --------------------------------------------------------------------------------------------
+
+    private static List<TestSpec> testSpecs() {
         return Arrays.asList(
                 TestSpec.forClass(ValidScalarFunction.class).expectSuccess(),
                 TestSpec.forInstance(new ValidScalarFunction()).expectSuccess(),
@@ -66,6 +134,33 @@ public class UserDefinedFunctionHelperTest {
                                 "Method 'eval' of function class '"
                                         + PrivateMethodScalarFunction.class.getName()
                                         + "' is not public."),
+                TestSpec.forClass(ValidAsyncScalarFunction.class).expectSuccess(),
+                TestSpec.forInstance(new ValidAsyncScalarFunction()).expectSuccess(),
+                TestSpec.forClass(PrivateAsyncScalarFunction.class)
+                        .expectErrorMessage(
+                                "Function class '"
+                                        + PrivateAsyncScalarFunction.class.getName()
+                                        + "' is not public."),
+                TestSpec.forClass(MissingImplementationAsyncScalarFunction.class)
+                        .expectErrorMessage(
+                                "Function class '"
+                                        + MissingImplementationAsyncScalarFunction.class.getName()
+                                        + "' does not implement a method named 'eval'."),
+                TestSpec.forClass(PrivateMethodAsyncScalarFunction.class)
+                        .expectErrorMessage(
+                                "Method 'eval' of function class '"
+                                        + PrivateMethodAsyncScalarFunction.class.getName()
+                                        + "' is not public."),
+                TestSpec.forClass(NonVoidAsyncScalarFunction.class)
+                        .expectErrorMessage(
+                                "Method 'eval' of function class '"
+                                        + NonVoidAsyncScalarFunction.class.getName()
+                                        + "' must be void."),
+                TestSpec.forClass(NoFutureAsyncScalarFunction.class)
+                        .expectErrorMessage(
+                                "Method 'eval' of function class '"
+                                        + NoFutureAsyncScalarFunction.class.getName()
+                                        + "' must have a first argument of type java.util.concurrent.CompletableFuture."),
                 TestSpec.forInstance(new ValidTableAggregateFunction()).expectSuccess(),
                 TestSpec.forInstance(new MissingEmitTableAggregateFunction())
                         .expectErrorMessage(
@@ -80,58 +175,10 @@ public class UserDefinedFunctionHelperTest {
                                         + ParameterizedTableFunction.class.getName()
                                         + "' must have a public default constructor."),
                 TestSpec.forClass(HierarchicalTableAggregateFunction.class).expectSuccess(),
-                TestSpec.forCatalogFunction(
-                                ValidScalarFunction.class.getName(), FunctionLanguage.JAVA)
-                        .expectSuccess(),
-                TestSpec.forCatalogFunction("I don't exist.", FunctionLanguage.JAVA)
+                TestSpec.forCatalogFunction(ValidScalarFunction.class.getName()).expectSuccess(),
+                TestSpec.forCatalogFunction("I don't exist.")
                         .expectErrorMessage("Cannot instantiate user-defined function 'f'."));
     }
-
-    @Parameter public TestSpec testSpec;
-
-    @Rule public ExpectedException thrown = ExpectedException.none();
-
-    @Test
-    public void testInstantiation() {
-        if (testSpec.functionClass != null) {
-            testErrorMessage();
-            assertThat(
-                    UserDefinedFunctionHelper.instantiateFunction(testSpec.functionClass),
-                    notNullValue());
-        } else if (testSpec.catalogFunction != null) {
-            testErrorMessage();
-            assertThat(
-                    UserDefinedFunctionHelper.instantiateFunction(
-                            UserDefinedFunctionHelperTest.class.getClassLoader(),
-                            new Configuration(),
-                            "f",
-                            testSpec.catalogFunction),
-                    notNullValue());
-        }
-    }
-
-    @Test
-    public void testValidation() {
-        if (testSpec.functionClass != null) {
-            testErrorMessage();
-            UserDefinedFunctionHelper.validateClass(testSpec.functionClass);
-        } else if (testSpec.functionInstance != null) {
-            testErrorMessage();
-            UserDefinedFunctionHelper.prepareInstance(
-                    new Configuration(), testSpec.functionInstance);
-        }
-    }
-
-    private void testErrorMessage() {
-        if (testSpec.expectedErrorMessage != null) {
-            thrown.expect(ValidationException.class);
-            thrown.expect(containsCause(new ValidationException(testSpec.expectedErrorMessage)));
-        }
-    }
-
-    // --------------------------------------------------------------------------------------------
-    // Test utilities
-    // --------------------------------------------------------------------------------------------
 
     private static class TestSpec {
 
@@ -143,34 +190,25 @@ public class UserDefinedFunctionHelperTest {
 
         @Nullable String expectedErrorMessage;
 
-        TestSpec(Class<? extends UserDefinedFunction> functionClass) {
+        TestSpec(
+                @Nullable Class<? extends UserDefinedFunction> functionClass,
+                @Nullable UserDefinedFunction functionInstance,
+                @Nullable CatalogFunction catalogFunction) {
             this.functionClass = functionClass;
-            this.functionInstance = null;
-            this.catalogFunction = null;
-        }
-
-        TestSpec(UserDefinedFunction functionInstance) {
-            this.functionClass = null;
             this.functionInstance = functionInstance;
-            this.catalogFunction = null;
-        }
-
-        TestSpec(CatalogFunction catalogFunction) {
-            this.functionClass = null;
-            this.functionInstance = null;
             this.catalogFunction = catalogFunction;
         }
 
         static TestSpec forClass(Class<? extends UserDefinedFunction> function) {
-            return new TestSpec(function);
+            return new TestSpec(function, null, null);
         }
 
         static TestSpec forInstance(UserDefinedFunction function) {
-            return new TestSpec(function);
+            return new TestSpec(null, function, null);
         }
 
-        static TestSpec forCatalogFunction(String className, FunctionLanguage language) {
-            return new TestSpec(new CatalogFunctionMock(className, language));
+        static TestSpec forCatalogFunction(String className) {
+            return new TestSpec(null, null, new CatalogFunctionMock(className));
         }
 
         TestSpec expectErrorMessage(String expectedErrorMessage) {
@@ -188,11 +226,8 @@ public class UserDefinedFunctionHelperTest {
 
         private final String className;
 
-        private final FunctionLanguage language;
-
-        CatalogFunctionMock(String className, FunctionLanguage language) {
+        CatalogFunctionMock(String className) {
             this.className = className;
-            this.language = language;
         }
 
         @Override
@@ -222,7 +257,12 @@ public class UserDefinedFunctionHelperTest {
 
         @Override
         public FunctionLanguage getFunctionLanguage() {
-            return language;
+            return FunctionLanguage.JAVA;
+        }
+
+        @Override
+        public List<ResourceUri> getFunctionResources() {
+            return Collections.emptyList();
         }
     }
 
@@ -253,6 +293,37 @@ public class UserDefinedFunctionHelperTest {
         private String eval(int i) {
             return null;
         }
+    }
+
+    /** Valid scalar function. */
+    public static class ValidAsyncScalarFunction extends AsyncScalarFunction {
+        public void eval(CompletableFuture<Integer> future, int i) {}
+    }
+
+    private static class PrivateAsyncScalarFunction extends AsyncScalarFunction {
+        public void eval(CompletableFuture<Integer> future, int i) {}
+    }
+
+    /** No implementation method. */
+    public static class MissingImplementationAsyncScalarFunction extends AsyncScalarFunction {
+        // nothing to do
+    }
+
+    /** Implementation method is private. */
+    public static class PrivateMethodAsyncScalarFunction extends AsyncScalarFunction {
+        private void eval(CompletableFuture<Integer> future, int i) {}
+    }
+
+    /** Implementation method isn't void. */
+    public static class NonVoidAsyncScalarFunction extends AsyncScalarFunction {
+        public String eval(CompletableFuture<Integer> future, int i) {
+            return "";
+        }
+    }
+
+    /** Implementation method isn't void. */
+    public static class NoFutureAsyncScalarFunction extends AsyncScalarFunction {
+        public void eval(int i) {}
     }
 
     /** Valid table aggregate function. */
@@ -322,6 +393,15 @@ public class UserDefinedFunctionHelperTest {
         @Override
         public String createAccumulator() {
             return null;
+        }
+    }
+
+    /** Function with state. */
+    public static class StatefulScalarFunction extends ScalarFunction {
+        public String state;
+
+        public String eval() {
+            return state;
         }
     }
 }

@@ -47,14 +47,28 @@ public class SortOperator extends TableStreamOperator<RowData>
     private GeneratedNormalizedKeyComputer gComputer;
     private GeneratedRecordComparator gComparator;
 
+    private final int maxNumFileHandles;
+    private final boolean compressionEnabled;
+    private final int compressionBlockSize;
+    private final boolean asyncMergeEnabled;
+
     private transient BinaryExternalSorter sorter;
     private transient StreamRecordCollector<RowData> collector;
     private transient BinaryRowDataSerializer binarySerializer;
 
     public SortOperator(
-            GeneratedNormalizedKeyComputer gComputer, GeneratedRecordComparator gComparator) {
+            GeneratedNormalizedKeyComputer gComputer,
+            GeneratedRecordComparator gComparator,
+            int maxNumFileHandles,
+            boolean compressionEnabled,
+            int compressionBlockSize,
+            boolean asyncMergeEnabled) {
         this.gComputer = gComputer;
         this.gComparator = gComparator;
+        this.maxNumFileHandles = maxNumFileHandles;
+        this.compressionEnabled = compressionEnabled;
+        this.compressionBlockSize = compressionBlockSize;
+        this.asyncMergeEnabled = asyncMergeEnabled;
     }
 
     @Override
@@ -85,12 +99,15 @@ public class SortOperator extends TableStreamOperator<RowData>
                         binarySerializer,
                         computer,
                         comparator,
-                        getContainingTask().getJobConfiguration());
+                        maxNumFileHandles,
+                        compressionEnabled,
+                        compressionBlockSize,
+                        asyncMergeEnabled);
         this.sorter.startThreads();
 
         collector = new StreamRecordCollector<>(output);
 
-        // register the the metrics.
+        // register the metrics.
         getMetricGroup().gauge("memoryUsedSizeInBytes", (Gauge<Long>) sorter::getUsedMemoryInBytes);
         getMetricGroup().gauge("numSpillFiles", (Gauge<Long>) sorter::getNumSpillFiles);
         getMetricGroup().gauge("spillInBytes", (Gauge<Long>) sorter::getSpillInBytes);

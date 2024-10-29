@@ -37,6 +37,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 
+import static org.apache.flink.configuration.ConfigurationUtils.getDoubleConfigOption;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasSize;
 import static org.junit.Assert.assertEquals;
@@ -57,7 +58,7 @@ public class JobGraphTest extends TestLogger {
             // add some configuration values
             {
                 jg.getJobConfiguration().setString("some key", "some value");
-                jg.getJobConfiguration().setDouble("Life of ", Math.PI);
+                jg.getJobConfiguration().set(getDoubleConfigOption("Life of "), Math.PI);
             }
 
             // add some vertices
@@ -344,7 +345,7 @@ public class JobGraphTest extends TestLogger {
             assertEquals(
                     blobKey,
                     InstantiationUtil.deserializeObject(
-                            jobGraphEntry.blobKey, ClassLoader.getSystemClassLoader(), false));
+                            jobGraphEntry.blobKey, ClassLoader.getSystemClassLoader()));
             assertEquals(entry.isExecutable, jobGraphEntry.isExecutable);
             assertEquals(entry.isZipped, jobGraphEntry.isZipped);
             assertEquals(entry.filePath, jobGraphEntry.filePath);
@@ -396,7 +397,6 @@ public class JobGraphTest extends TestLogger {
                         Integer.MAX_VALUE,
                         CheckpointRetentionPolicy.NEVER_RETAIN_AFTER_TERMINATION,
                         true,
-                        false,
                         false,
                         0,
                         0);

@@ -10,8 +10,11 @@ github:
     - scala
     - python
     - sql
+  collaborators:
+    - flinkbot
 notifications:
   commits:      commits@flink.apache.org
   issues:       issues@flink.apache.org
   pullrequests: issues@flink.apache.org
+  jobs:         builds@flink.apache.org
   jira_options: link label

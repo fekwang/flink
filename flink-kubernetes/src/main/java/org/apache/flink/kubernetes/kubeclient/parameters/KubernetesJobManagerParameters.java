@@ -18,6 +18,7 @@
 
 package org.apache.flink.kubernetes.kubeclient.parameters;
 
+import org.apache.flink.client.cli.ArtifactFetchOptions;
 import org.apache.flink.client.deployment.ClusterSpecification;
 import org.apache.flink.configuration.BlobServerOptions;
 import org.apache.flink.configuration.Configuration;
@@ -28,7 +29,6 @@ import org.apache.flink.configuration.ResourceManagerOptions;
 import org.apache.flink.configuration.RestOptions;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptions;
 import org.apache.flink.kubernetes.configuration.KubernetesConfigOptionsInternal;
-import org.apache.flink.kubernetes.utils.Constants;
 import org.apache.flink.kubernetes.utils.KubernetesUtils;
 import org.apache.flink.runtime.jobmanager.HighAvailabilityMode;
 
@@ -63,9 +63,13 @@ public class KubernetesJobManagerParameters extends AbstractKubernetesParameters
                 flinkConfig
                         .getOptional(KubernetesConfigOptions.JOB_MANAGER_LABELS)
                         .orElse(Collections.emptyMap()));
-        labels.putAll(getCommonLabels());
-        labels.put(Constants.LABEL_COMPONENT_KEY, Constants.LABEL_COMPONENT_JOB_MANAGER);
+        labels.putAll(getSelectors());
         return Collections.unmodifiableMap(labels);
+    }
+
+    @Override
+    public Map<String, String> getSelectors() {
+        return KubernetesUtils.getJobManagerSelectors(getClusterId());
     }
 
     @Override
@@ -114,24 +118,50 @@ public class KubernetesJobManagerParameters extends AbstractKubernetesParameters
                 .orElse(Collections.emptyMap());
     }
 
+    public Map<String, String> getInternalServiceAnnotations() {
+        return flinkConfig
+                .getOptional(KubernetesConfigOptions.INTERNAL_SERVICE_ANNOTATIONS)
+                .orElse(Collections.emptyMap());
+    }
+
     public int getJobManagerMemoryMB() {
         return clusterSpecification.getMasterMemoryMB();
     }
 
     public double getJobManagerCPU() {
-        return flinkConfig.getDouble(KubernetesConfigOptions.JOB_MANAGER_CPU);
+        return flinkConfig.get(KubernetesConfigOptions.JOB_MANAGER_CPU);
+    }
+
+    public double getJobManagerCPULimitFactor() {
+        final double limitFactor =
+                flinkConfig.get(KubernetesConfigOptions.JOB_MANAGER_CPU_LIMIT_FACTOR);
+        checkArgument(
+                limitFactor >= 1,
+                "%s should be greater or equal to 1.",
+                KubernetesConfigOptions.JOB_MANAGER_CPU_LIMIT_FACTOR.key());
+        return limitFactor;
+    }
+
+    public double getJobManagerMemoryLimitFactor() {
+        final double limitFactor =
+                flinkConfig.get(KubernetesConfigOptions.JOB_MANAGER_MEMORY_LIMIT_FACTOR);
+        checkArgument(
+                limitFactor >= 1,
+                "%s should be greater or equal to 1.",
+                KubernetesConfigOptions.JOB_MANAGER_MEMORY_LIMIT_FACTOR.key());
+        return limitFactor;
     }
 
     public int getRestPort() {
-        return flinkConfig.getInteger(RestOptions.PORT);
+        return flinkConfig.get(RestOptions.PORT);
     }
 
     public int getRestBindPort() {
-        return Integer.valueOf(flinkConfig.getString(RestOptions.BIND_PORT));
+        return Integer.valueOf(flinkConfig.get(RestOptions.BIND_PORT));
     }
 
     public int getRPCPort() {
-        return flinkConfig.getInteger(JobManagerOptions.PORT);
+        return flinkConfig.get(JobManagerOptions.PORT);
     }
 
     public int getBlobServerPort() {
@@ -146,7 +176,7 @@ public class KubernetesJobManagerParameters extends AbstractKubernetesParameters
 
     public String getEntrypointClass() {
         final String entrypointClass =
-                flinkConfig.getString(KubernetesConfigOptionsInternal.ENTRY_POINT_CLASS);
+                flinkConfig.get(KubernetesConfigOptionsInternal.ENTRY_POINT_CLASS);
         checkNotNull(
                 entrypointClass,
                 KubernetesConfigOptionsInternal.ENTRY_POINT_CLASS + " must be specified!");
@@ -176,5 +206,13 @@ public class KubernetesJobManagerParameters extends AbstractKubernetesParameters
                     "High availability should be enabled when starting standby JobManagers.");
         }
         return replicas;
+    }
+
+    public String getEntrypointArgs() {
+        return flinkConfig.get(KubernetesConfigOptions.KUBERNETES_JOBMANAGER_ENTRYPOINT_ARGS);
+    }
+
+    public String getUserArtifactsBaseDir() {
+        return flinkConfig.get(ArtifactFetchOptions.BASE_DIR);
     }
 }

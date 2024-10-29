@@ -15,37 +15,34 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.plan.stream.sql
 
 import org.apache.flink.table.api.TableException
 import org.apache.flink.table.planner.plan.utils.JavaUserDefinedAggFunctions.WeightedAvgWithMerge
 import org.apache.flink.table.planner.utils.TableTestBase
 
-import org.junit.Test
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Test
 
-/**
- * Tests for window rank.
- */
+/** Tests for window rank. */
 class WindowRankTest extends TableTestBase {
 
   private val util = streamTestUtil()
   util.addTemporarySystemFunction("weightedAvg", classOf[WeightedAvgWithMerge])
-  util.tableEnv.executeSql(
-    s"""
-       |CREATE TABLE MyTable (
-       |  a INT,
-       |  b BIGINT,
-       |  c STRING NOT NULL,
-       |  d DECIMAL(10, 3),
-       |  e BIGINT,
-       |  rowtime TIMESTAMP(3),
-       |  proctime as PROCTIME(),
-       |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
-       |) with (
-       |  'connector' = 'values'
-       |)
-       |""".stripMargin)
+  util.tableEnv.executeSql(s"""
+                              |CREATE TABLE MyTable (
+                              |  a INT,
+                              |  b BIGINT,
+                              |  c STRING NOT NULL,
+                              |  d DECIMAL(10, 3),
+                              |  e BIGINT,
+                              |  rowtime TIMESTAMP(3),
+                              |  proctime as PROCTIME(),
+                              |  WATERMARK FOR rowtime AS rowtime - INTERVAL '1' SECOND
+                              |) with (
+                              |  'connector' = 'values'
+                              |)
+                              |""".stripMargin)
 
   // ----------------------------------------------------------------------------------------
   // Tests for queries Rank on window TVF
@@ -82,25 +79,7 @@ class WindowRankTest extends TableTestBase {
   }
 
   @Test
-  def testUnsupportedWindowTVF_Session(): Unit = {
-    val sql =
-      """
-        |SELECT window_start, window_end, window_time, a, b, c, d, e
-        |FROM (
-        |SELECT *,
-        |   ROW_NUMBER() OVER(PARTITION BY a, window_start, window_end ORDER BY b DESC) as rownum
-        |FROM TABLE(SESSION(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '5' MINUTE))
-        |)
-        |WHERE rownum <= 3
-      """.stripMargin
-
-    thrown.expectMessage("Session Window TableFunction is not supported yet.")
-    thrown.expect(classOf[TableException])
-    util.verifyExplain(sql)
-  }
-
-  @Test
-  def testUnsupportedWindowTVF_Proctime(): Unit = {
+  def testUnsupportedWindowTVF_TumbleOnProctime(): Unit = {
     val sql =
       """
         |SELECT window_start, window_end, window_time, a, b, c, d, e
@@ -112,9 +91,9 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expectMessage("Processing time Window TopN is not supported yet.")
-    thrown.expect(classOf[TableException])
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window TopN is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -163,9 +142,9 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expectMessage("Processing time Window TopN is not supported yet.")
-    thrown.expect(classOf[TableException])
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window TopN is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -214,9 +193,9 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expectMessage("Processing time Window TopN is not supported yet.")
-    thrown.expect(classOf[TableException])
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window TopN is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   // ----------------------------------------------------------------------------------------
@@ -277,9 +256,9 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Processing time Window TopN is not supported yet.")
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window TopN is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -338,9 +317,9 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Processing time Window TopN is not supported yet.")
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window TopN is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -403,68 +382,9 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Processing time Window TopN is not supported yet.")
-    util.verifyExplain(sql)
-  }
-
-  @Test
-  def testOnSessionWindowAggregate(): Unit = {
-    val sql =
-      """
-        |SELECT window_start, window_end, window_time, a, cnt, sum_d, max_d, wAvg, uv
-        |FROM (
-        |SELECT *,
-        |   ROW_NUMBER() OVER(PARTITION BY window_start, window_end ORDER BY cnt DESC) as rownum
-        |FROM (
-        |  SELECT
-        |    a,
-        |    window_start,
-        |    window_end,
-        |    window_time,
-        |    count(*) as cnt,
-        |    sum(d) as sum_d,
-        |    max(d) filter (where b > 1000) as max_d,
-        |    weightedAvg(b, e) AS wAvg,
-        |    count(distinct c) AS uv
-        |  FROM TABLE(SESSION(TABLE MyTable, DESCRIPTOR(rowtime), INTERVAL '15' MINUTE))
-        |  GROUP BY a, window_start, window_end, window_time
-        |  )
-        |)
-        |WHERE rownum <= 3
-      """.stripMargin
-    util.verifyRelPlan(sql)
-  }
-
-  @Test
-  def testOnSessionWindowAggregateOnProctime(): Unit = {
-    val sql =
-      """
-        |SELECT window_start, window_end, window_time, a, cnt, sum_d, max_d, wAvg, uv
-        |FROM (
-        |SELECT *,
-        |   ROW_NUMBER() OVER(PARTITION BY a, window_start, window_end ORDER BY cnt DESC) as rownum
-        |FROM (
-        |  SELECT
-        |    a,
-        |    window_start,
-        |    window_end,
-        |    window_time,
-        |    count(*) as cnt,
-        |    sum(d) as sum_d,
-        |    max(d) filter (where b > 1000) as max_d,
-        |    weightedAvg(b, e) AS wAvg,
-        |    count(distinct c) AS uv
-        |  FROM TABLE(SESSION(TABLE MyTable, DESCRIPTOR(proctime), INTERVAL '15' MINUTE))
-        |  GROUP BY a, window_start, window_end, window_time
-        |  )
-        |)
-        |WHERE rownum <= 3
-      """.stripMargin
-
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Processing time Window TopN is not supported yet.")
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("Processing time Window TopN is not supported yet.")
+      .isInstanceOf[TableException]
   }
 
   // ----------------------------------------------------------------------------------------
@@ -567,10 +487,10 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage(
-      "RANK() function is not supported on Window TopN currently, only ROW_NUMBER() is supported.")
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining(
+        "RANK() function is not supported on Window TopN currently, only ROW_NUMBER() is supported.")
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -599,11 +519,10 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= 3
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage(
-      "DENSE_RANK() function is not supported on Window TopN currently, " +
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining("DENSE_RANK() function is not supported on Window TopN currently, " +
         "only ROW_NUMBER() is supported.")
-    util.verifyExplain(sql)
+      .isInstanceOf[TableException]
   }
 
   @Test
@@ -633,8 +552,9 @@ class WindowRankTest extends TableTestBase {
         |WHERE rownum <= max_b
       """.stripMargin
 
-    thrown.expect(classOf[TableException])
-    thrown.expectMessage("Rank strategy rankEnd=max_b is not supported on window rank currently.")
-    util.verifyExplain(sql)
+    assertThatThrownBy(() => util.verifyExplain(sql))
+      .hasMessageContaining(
+        "Rank strategy rankEnd=max_b is not supported on window rank currently.")
+      .isInstanceOf[TableException]
   }
 }

@@ -18,6 +18,8 @@
 
 package org.apache.flink.state.api.input;
 
+import org.apache.flink.api.common.ExecutionConfig;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.RichFlatMapFunction;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
@@ -28,7 +30,7 @@ import org.apache.flink.runtime.checkpoint.OperatorState;
 import org.apache.flink.runtime.checkpoint.OperatorSubtaskState;
 import org.apache.flink.runtime.jobgraph.OperatorID;
 import org.apache.flink.runtime.state.VoidNamespace;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
+import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
 import org.apache.flink.state.api.functions.KeyedStateReaderFunction;
 import org.apache.flink.state.api.input.operator.KeyedStateReaderOperator;
 import org.apache.flink.state.api.input.splits.KeyGroupRangeInputSplit;
@@ -64,15 +66,16 @@ public class KeyedStateInputFormatTest {
 
         OperatorSubtaskState state =
                 createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit[] splits = format.createInputSplits(4);
         Assert.assertEquals(
                 "Failed to properly partition operator state into input splits", 4, splits.length);
@@ -84,15 +87,16 @@ public class KeyedStateInputFormatTest {
 
         OperatorSubtaskState state =
                 createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit[] splits = format.createInputSplits(129);
         Assert.assertEquals(
                 "Failed to properly partition operator state into input splits",
@@ -106,15 +110,16 @@ public class KeyedStateInputFormatTest {
 
         OperatorSubtaskState state =
                 createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new ReaderFunction();
@@ -130,15 +135,16 @@ public class KeyedStateInputFormatTest {
 
         OperatorSubtaskState state =
                 createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new DoubleReaderFunction();
@@ -155,15 +161,16 @@ public class KeyedStateInputFormatTest {
 
         OperatorSubtaskState state =
                 createOperatorSubtaskState(new StreamFlatMap<>(new StatefulFunction()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new ReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new InvalidReaderFunction();
@@ -180,15 +187,16 @@ public class KeyedStateInputFormatTest {
         OperatorSubtaskState state =
                 createOperatorSubtaskState(
                         new KeyedProcessOperator<>(new StatefulFunctionWithTime()));
-        OperatorState operatorState = new OperatorState(operatorID, 1, 128);
+        OperatorState operatorState = new OperatorState(null, null, operatorID, 1, 128);
         operatorState.putState(0, state);
 
         KeyedStateInputFormat<?, ?, ?> format =
                 new KeyedStateInputFormat<>(
                         operatorState,
-                        new MemoryStateBackend(),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(new TimerReaderFunction(), Types.INT));
+                        new KeyedStateReaderOperator<>(new TimerReaderFunction(), Types.INT),
+                        new ExecutionConfig());
         KeyGroupRangeInputSplit split = format.createInputSplits(1)[0];
 
         KeyedStateReaderFunction<Integer, Integer> userFunction = new TimerReaderFunction();
@@ -205,10 +213,11 @@ public class KeyedStateInputFormatTest {
             throws IOException {
         KeyedStateInputFormat<Integer, VoidNamespace, Integer> format =
                 new KeyedStateInputFormat<>(
-                        new OperatorState(OperatorIDGenerator.fromUid("uid"), 1, 4),
-                        new MemoryStateBackend(),
+                        new OperatorState(null, null, OperatorIDGenerator.fromUid("uid"), 1, 4),
+                        new HashMapStateBackend(),
                         new Configuration(),
-                        new KeyedStateReaderOperator<>(userFunction, Types.INT));
+                        new KeyedStateReaderOperator<>(userFunction, Types.INT),
+                        new ExecutionConfig());
 
         List<Integer> data = new ArrayList<>();
 
@@ -249,7 +258,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -265,7 +274,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -281,7 +290,7 @@ public class KeyedStateInputFormatTest {
     static class InvalidReaderFunction extends KeyedStateReaderFunction<Integer, Integer> {
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -298,7 +307,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -312,7 +321,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 
@@ -329,7 +338,7 @@ public class KeyedStateInputFormatTest {
         ValueState<Integer> state;
 
         @Override
-        public void open(Configuration parameters) {
+        public void open(OpenContext openContext) {
             state = getRuntimeContext().getState(stateDescriptor);
         }
 

@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.rest.handler.job;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.executiongraph.AccessExecutionGraph;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
 import org.apache.flink.runtime.rest.handler.RestHandlerException;
@@ -31,6 +30,7 @@ import org.apache.flink.runtime.scheduler.ExecutionGraphInfo;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.Executor;
 
@@ -47,7 +47,7 @@ public abstract class AbstractAccessExecutionGraphHandler<
 
     protected AbstractAccessExecutionGraphHandler(
             GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-            Time timeout,
+            Duration timeout,
             Map<String, String> responseHeaders,
             MessageHeaders<EmptyRequestBody, R, M> messageHeaders,
             ExecutionGraphCache executionGraphCache,
@@ -63,12 +63,12 @@ public abstract class AbstractAccessExecutionGraphHandler<
 
     @Override
     protected R handleRequest(
-            HandlerRequest<EmptyRequestBody, M> request, ExecutionGraphInfo executionGraphInfo)
+            HandlerRequest<EmptyRequestBody> request, ExecutionGraphInfo executionGraphInfo)
             throws RestHandlerException {
         return handleRequest(request, executionGraphInfo.getArchivedExecutionGraph());
     }
 
     protected abstract R handleRequest(
-            HandlerRequest<EmptyRequestBody, M> request, AccessExecutionGraph executionGraph)
+            HandlerRequest<EmptyRequestBody> request, AccessExecutionGraph executionGraph)
             throws RestHandlerException;
 }

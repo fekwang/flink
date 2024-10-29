@@ -20,15 +20,16 @@ package org.apache.flink.table.planner.functions.aggfunctions;
 
 import org.apache.flink.table.data.StringData;
 import org.apache.flink.table.functions.AggregateFunction;
-import org.apache.flink.table.planner.functions.aggfunctions.ListAggWithRetractAggFunction.ListAggWithRetractAccumulator;
+import org.apache.flink.table.runtime.functions.aggregate.ListAggWithRetractAggFunction;
+import org.apache.flink.table.runtime.functions.aggregate.ListAggWithRetractAggFunction.ListAggWithRetractAccumulator;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 
 /** Test case for built-in LISTAGG with retraction aggregate function. */
-public final class ListAggWithRetractAggFunctionTest
-        extends AggFunctionTestBase<StringData, ListAggWithRetractAccumulator> {
+final class ListAggWithRetractAggFunctionTest
+        extends AggFunctionTestBase<StringData, StringData, ListAggWithRetractAccumulator> {
 
     @Override
     protected List<List<StringData>> getInputValueSets() {

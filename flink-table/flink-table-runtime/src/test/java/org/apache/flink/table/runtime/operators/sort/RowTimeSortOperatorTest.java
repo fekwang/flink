@@ -32,7 +32,7 @@ import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.IntType;
 import org.apache.flink.table.types.logical.VarCharType;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,16 +40,13 @@ import java.util.List;
 import static org.apache.flink.table.runtime.util.StreamRecordUtils.insertRecord;
 
 /** Tests for {@link RowTimeSortOperator}. */
-public class RowTimeSortOperatorTest {
+class RowTimeSortOperatorTest {
 
     @Test
-    public void testSortOnTwoFields() throws Exception {
+    void testSortOnTwoFields() throws Exception {
         InternalTypeInfo<RowData> inputRowType =
                 InternalTypeInfo.ofFields(
-                        new IntType(),
-                        new BigIntType(),
-                        new VarCharType(VarCharType.MAX_LENGTH),
-                        new IntType());
+                        new IntType(), new BigIntType(), VarCharType.STRING_TYPE, new IntType());
 
         // Note: RowTimeIdx must be 0 in product environment, the value is 1 here just for simplify
         // the testing
@@ -131,13 +128,10 @@ public class RowTimeSortOperatorTest {
     }
 
     @Test
-    public void testOnlySortOnRowTime() throws Exception {
+    void testOnlySortOnRowTime() throws Exception {
         InternalTypeInfo<RowData> inputRowType =
                 InternalTypeInfo.ofFields(
-                        new BigIntType(),
-                        new BigIntType(),
-                        new VarCharType(VarCharType.MAX_LENGTH),
-                        new IntType());
+                        new BigIntType(), new BigIntType(), VarCharType.STRING_TYPE, new IntType());
         int rowTimeIdx = 0;
         RowDataHarnessAssertor assertor =
                 new RowDataHarnessAssertor(inputRowType.toRowFieldTypes());

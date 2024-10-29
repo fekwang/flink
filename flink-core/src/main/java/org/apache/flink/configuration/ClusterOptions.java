@@ -22,6 +22,9 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.annotation.docs.Documentation;
 import org.apache.flink.configuration.description.Description;
 import org.apache.flink.configuration.description.InlineElement;
+import org.apache.flink.configuration.description.TextElement;
+
+import java.time.Duration;
 
 import static org.apache.flink.configuration.ClusterOptions.UserSystemExitMode.THROW;
 import static org.apache.flink.configuration.ConfigOptions.key;
@@ -34,39 +37,40 @@ import static org.apache.flink.configuration.description.TextElement.text;
 public class ClusterOptions {
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> INITIAL_REGISTRATION_TIMEOUT =
+    public static final ConfigOption<Duration> INITIAL_REGISTRATION_TIMEOUT =
             ConfigOptions.key("cluster.registration.initial-timeout")
-                    .defaultValue(100L)
-                    .withDescription(
-                            "Initial registration timeout between cluster components in milliseconds.");
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(100))
+                    .withDescription("Initial registration timeout between cluster components.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> MAX_REGISTRATION_TIMEOUT =
-            ConfigOptions.key("cluster.registration.max-timeout")
-                    .defaultValue(30000L)
-                    .withDescription(
-                            "Maximum registration timeout between cluster components in milliseconds.");
+    public static final ConfigOption<Duration> MAX_REGISTRATION_TIMEOUT =
+            key("cluster.registration.max-timeout")
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000))
+                    .withDescription("Maximum registration timeout between cluster components.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> ERROR_REGISTRATION_DELAY =
+    public static final ConfigOption<Duration> ERROR_REGISTRATION_DELAY =
             ConfigOptions.key("cluster.registration.error-delay")
-                    .defaultValue(10000L)
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(10000L))
                     .withDescription(
-                            "The pause made after an registration attempt caused an exception (other than timeout) in milliseconds.");
+                            "The pause made after an registration attempt caused an exception (other than timeout).");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> REFUSED_REGISTRATION_DELAY =
+    public static final ConfigOption<Duration> REFUSED_REGISTRATION_DELAY =
             ConfigOptions.key("cluster.registration.refused-registration-delay")
-                    .defaultValue(30000L)
-                    .withDescription(
-                            "The pause made after the registration attempt was refused in milliseconds.");
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000L))
+                    .withDescription("The pause made after the registration attempt was refused.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
-    public static final ConfigOption<Long> CLUSTER_SERVICES_SHUTDOWN_TIMEOUT =
+    public static final ConfigOption<Duration> CLUSTER_SERVICES_SHUTDOWN_TIMEOUT =
             ConfigOptions.key("cluster.services.shutdown-timeout")
-                    .defaultValue(30000L)
-                    .withDescription(
-                            "The shutdown timeout for cluster services like executors in milliseconds.");
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(30000L))
+                    .withDescription("The shutdown timeout for cluster services like executors.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_FAULT_TOLERANCE)
     public static final ConfigOption<Integer> CLUSTER_IO_EXECUTOR_POOL_SIZE =
@@ -77,18 +81,6 @@ public class ClusterOptions {
                             "The size of the IO executor pool used by the cluster to execute blocking IO operations (Master as well as TaskManager processes). "
                                     + "By default it will use 4 * the number of CPU cores (hardware contexts) that the cluster process has access to. "
                                     + "Increasing the pool size allows to run more IO operations concurrently.");
-
-    @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
-    public static final ConfigOption<Boolean> EVENLY_SPREAD_OUT_SLOTS_STRATEGY =
-            ConfigOptions.key("cluster.evenly-spread-out-slots")
-                    .defaultValue(false)
-                    .withDescription(
-                            Description.builder()
-                                    .text(
-                                            "Enable the slot spread out allocation strategy. This strategy tries to spread out "
-                                                    + "the slots evenly across all available %s.",
-                                            code("TaskExecutors"))
-                                    .build());
 
     @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
     public static final ConfigOption<Boolean> HALT_ON_FATAL_ERROR =
@@ -121,21 +113,13 @@ public class ClusterOptions {
                                             code(HALT_ON_FATAL_ERROR.key()), code(THROW.name()))
                                     .build());
 
-    @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
-    public static final ConfigOption<Boolean> ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT =
-            ConfigOptions.key("cluster.fine-grained-resource-management.enabled")
-                    .booleanType()
-                    .defaultValue(false)
+    @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
+    public static final ConfigOption<Integer> THREAD_DUMP_STACKTRACE_MAX_DEPTH =
+            key("cluster.thread-dump.stacktrace-max-depth")
+                    .intType()
+                    .defaultValue(50)
                     .withDescription(
-                            "Defines whether the cluster uses fine-grained resource management.");
-
-    @Documentation.Section(Documentation.Sections.EXPERT_SCHEDULING)
-    public static final ConfigOption<Boolean> FINE_GRAINED_SHUFFLE_MODE_ALL_BLOCKING =
-            ConfigOptions.key("fine-grained.shuffle-mode.all-blocking")
-                    .booleanType()
-                    .defaultValue(false)
-                    .withDescription(
-                            "Whether to convert all PIPELINE edges to BLOCKING when apply fine-grained resource management in batch jobs.");
+                            "The maximum stacktrace depth of TaskManager and JobManager's thread dump web-frontend displayed.");
 
     @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
     public static final ConfigOption<UncaughtExceptionHandleMode> UNCAUGHT_EXCEPTION_HANDLING =
@@ -149,6 +133,47 @@ public class ClusterOptions {
                                     UncaughtExceptionHandleMode.LOG.name(),
                                     UncaughtExceptionHandleMode.FAIL.name()));
 
+    @Documentation.OverrideDefault("io.tmp.dirs")
+    @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
+    public static final ConfigOption<String> PROCESS_WORKING_DIR_BASE =
+            ConfigOptions.key("process.working-dir")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Local working directory for Flink processes. "
+                                                    + "The working directory can be used to store information that can be used upon process recovery. "
+                                                    + "If not configured, then it will default to a randomly picked temporary directory defined via %s.",
+                                            TextElement.code(CoreOptions.TMP_DIRS.key()))
+                                    .build());
+
+    @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
+    public static final ConfigOption<String> JOB_MANAGER_PROCESS_WORKING_DIR_BASE =
+            ConfigOptions.key("process.jobmanager.working-dir")
+                    .stringType()
+                    .noDefaultValue()
+                    .withFallbackKeys(PROCESS_WORKING_DIR_BASE.key())
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Working directory for Flink JobManager processes. The working directory can be used to store information that can be used upon process recovery. If not configured, then it will default to %s.",
+                                            TextElement.code(PROCESS_WORKING_DIR_BASE.key()))
+                                    .build());
+
+    @Documentation.Section(Documentation.Sections.EXPERT_CLUSTER)
+    public static final ConfigOption<String> TASK_MANAGER_PROCESS_WORKING_DIR_BASE =
+            ConfigOptions.key("process.taskmanager.working-dir")
+                    .stringType()
+                    .noDefaultValue()
+                    .withFallbackKeys(PROCESS_WORKING_DIR_BASE.key())
+                    .withDescription(
+                            Description.builder()
+                                    .text(
+                                            "Working directory for Flink TaskManager processes. The working directory can be used to store information that can be used upon process recovery. If not configured, then it will default to %s.",
+                                            TextElement.code(PROCESS_WORKING_DIR_BASE.key()))
+                                    .build());
+
     public static JobManagerOptions.SchedulerType getSchedulerType(Configuration configuration) {
         if (isAdaptiveSchedulerEnabled(configuration) || isReactiveModeEnabled(configuration)) {
             return JobManagerOptions.SchedulerType.Adaptive;
@@ -157,7 +182,7 @@ public class ClusterOptions {
         }
     }
 
-    private static boolean isReactiveModeEnabled(Configuration configuration) {
+    public static boolean isReactiveModeEnabled(Configuration configuration) {
         return configuration.get(JobManagerOptions.SCHEDULER_MODE)
                 == SchedulerExecutionMode.REACTIVE;
     }
@@ -168,14 +193,6 @@ public class ClusterOptions {
                     == JobManagerOptions.SchedulerType.Adaptive;
         } else {
             return System.getProperties().containsKey("flink.tests.enable-adaptive-scheduler");
-        }
-    }
-
-    public static boolean isFineGrainedResourceManagementEnabled(Configuration configuration) {
-        if (configuration.contains(ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT)) {
-            return configuration.get(ENABLE_FINE_GRAINED_RESOURCE_MANAGEMENT);
-        } else {
-            return System.getProperties().containsKey("flink.tests.enable-fine-grained");
         }
     }
 

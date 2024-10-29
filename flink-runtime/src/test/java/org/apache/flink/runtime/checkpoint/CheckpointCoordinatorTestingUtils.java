@@ -26,7 +26,6 @@ import org.apache.flink.core.io.SimpleVersionedSerializer;
 import org.apache.flink.runtime.OperatorIDPair;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutor;
 import org.apache.flink.runtime.concurrent.ComponentMainThreadExecutorServiceAdapter;
-import org.apache.flink.runtime.concurrent.ManuallyTriggeredScheduledExecutor;
 import org.apache.flink.runtime.execution.ExecutionState;
 import org.apache.flink.runtime.executiongraph.ExecutionAttemptID;
 import org.apache.flink.runtime.executiongraph.ExecutionGraph;
@@ -45,24 +44,28 @@ import org.apache.flink.runtime.jobmanager.slots.TaskManagerGateway;
 import org.apache.flink.runtime.jobmaster.LogicalSlot;
 import org.apache.flink.runtime.jobmaster.TestingLogicalSlotBuilder;
 import org.apache.flink.runtime.messages.Acknowledge;
+import org.apache.flink.runtime.metrics.groups.UnregisteredMetricGroups;
 import org.apache.flink.runtime.state.ChainedStateHandle;
 import org.apache.flink.runtime.state.CheckpointStorage;
+import org.apache.flink.runtime.state.InputChannelStateHandle;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.KeyGroupRangeOffsets;
 import org.apache.flink.runtime.state.KeyGroupsStateHandle;
 import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.OperatorStreamStateHandle;
-import org.apache.flink.runtime.state.SharedStateRegistry;
-import org.apache.flink.runtime.state.SharedStateRegistryFactory;
+import org.apache.flink.runtime.state.ResultSubpartitionStateHandle;
+import org.apache.flink.runtime.state.StateObject;
 import org.apache.flink.runtime.state.filesystem.FileStateHandle;
 import org.apache.flink.runtime.state.memory.ByteStreamStateHandle;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
+import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
 import org.apache.flink.runtime.testtasks.NoOpInvokable;
 import org.apache.flink.runtime.testutils.CommonTestUtils;
 import org.apache.flink.util.InstantiationUtil;
 import org.apache.flink.util.Preconditions;
+import org.apache.flink.util.clock.SystemClock;
 import org.apache.flink.util.concurrent.Executors;
+import org.apache.flink.util.concurrent.ManuallyTriggeredScheduledExecutor;
 import org.apache.flink.util.concurrent.ScheduledExecutor;
 
 import org.junit.Assert;
@@ -74,18 +77,23 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
+import java.util.function.BiFunction;
 
+import static org.apache.flink.runtime.checkpoint.StateHandleDummyUtil.createNewInputChannelStateHandle;
+import static org.apache.flink.runtime.checkpoint.StateHandleDummyUtil.createNewResultSubpartitionStateHandle;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.spy;
@@ -423,9 +431,58 @@ public class CheckpointCoordinatorTestingUtils {
         return new KeyGroupsStateHandle(keyGroupRangeOffsets, allSerializedStatesHandle);
     }
 
+    public static Tuple2<List<StateObject>, OperatorSubtaskState>
+            generateSampleOperatorSubtaskState() throws IOException {
+        JobVertexID jobVertexID = new JobVertexID();
+        int index = 0;
+        Random random = new Random();
+        OperatorStateHandle managedOpHandle =
+                generatePartitionableStateHandle(jobVertexID, index, 2, 8, false);
+        OperatorStateHandle rawOpHandle =
+                generatePartitionableStateHandle(jobVertexID, index, 2, 8, true);
+        KeyedStateHandle managedKeyedHandle =
+                generateKeyGroupState(jobVertexID, new KeyGroupRange(0, random.nextInt(12)), false);
+        KeyedStateHandle rawKeyedHandle =
+                generateKeyGroupState(jobVertexID, new KeyGroupRange(0, random.nextInt(10)), true);
+        InputChannelStateHandle inputChannelStateHandle =
+                createNewInputChannelStateHandle(3, random);
+        ResultSubpartitionStateHandle resultSubpartitionStateHandle =
+                createNewResultSubpartitionStateHandle(3, random);
+        OperatorSubtaskState operatorSubtaskState =
+                OperatorSubtaskState.builder()
+                        .setManagedOperatorState(managedOpHandle)
+                        .setRawOperatorState(rawOpHandle)
+                        .setManagedKeyedState(managedKeyedHandle)
+                        .setRawKeyedState(rawKeyedHandle)
+                        .setInputChannelState(
+                                StateObjectCollection.singleton(inputChannelStateHandle))
+                        .setResultSubpartitionState(
+                                StateObjectCollection.singleton(resultSubpartitionStateHandle))
+                        .setInputRescalingDescriptor(
+                                InflightDataRescalingDescriptorUtil.rescalingDescriptor(
+                                        new int[1],
+                                        new RescaleMappings[0],
+                                        Collections.singleton(1)))
+                        .setOutputRescalingDescriptor(
+                                InflightDataRescalingDescriptorUtil.rescalingDescriptor(
+                                        new int[1],
+                                        new RescaleMappings[0],
+                                        Collections.singleton(2)))
+                        .build();
+        return new Tuple2<>(
+                Arrays.asList(
+                        managedOpHandle,
+                        rawOpHandle,
+                        managedKeyedHandle,
+                        rawKeyedHandle,
+                        inputChannelStateHandle,
+                        resultSubpartitionStateHandle),
+                operatorSubtaskState);
+    }
+
     public static TaskStateSnapshot createSnapshotWithUnionListState(
-            File stateFile, OperatorID operatorId, boolean isOperatorsFinished) throws IOException {
-        TaskStateSnapshot taskStateSnapshot = new TaskStateSnapshot(1, isOperatorsFinished);
+            File stateFile, OperatorID operatorId, boolean isTaskFinished) throws IOException {
+        TaskStateSnapshot taskStateSnapshot = new TaskStateSnapshot(1, isTaskFinished);
         taskStateSnapshot.putSubtaskStateByOperatorID(
                 operatorId, createSubtaskStateWithUnionListState(stateFile));
         return taskStateSnapshot;
@@ -500,11 +557,15 @@ public class CheckpointCoordinatorTestingUtils {
         }
 
         @Override
-        public void notifyCheckpointComplete(
-                ExecutionAttemptID attemptId, JobID jobId, long checkpointId, long timestamp) {
+        public void notifyCheckpointOnComplete(
+                ExecutionAttemptID attemptId,
+                JobID jobId,
+                long completedCheckpointId,
+                long completedTimestamp,
+                long lastSubsumedCheckpointId) {
             notifiedCompletedCheckpoints
                     .computeIfAbsent(attemptId, k -> new ArrayList<>())
-                    .add(new NotifiedCheckpoint(jobId, checkpointId, timestamp));
+                    .add(new NotifiedCheckpoint(jobId, completedCheckpointId, completedTimestamp));
         }
 
         @Override
@@ -646,7 +707,7 @@ public class CheckpointCoordinatorTestingUtils {
             return this;
         }
 
-        ExecutionGraph build() throws Exception {
+        ExecutionGraph build(ScheduledExecutorService executorService) throws Exception {
             // Lets connect source vertices and non-source vertices
             for (JobVertex source : sourceVertices) {
                 for (JobVertex nonSource : nonSourceVertices) {
@@ -660,8 +721,8 @@ public class CheckpointCoordinatorTestingUtils {
             allVertices.addAll(nonSourceVertices);
 
             ExecutionGraph executionGraph =
-                    ExecutionGraphTestUtils.createSimpleTestGraph(
-                            allVertices.toArray(new JobVertex[0]));
+                    ExecutionGraphTestUtils.createExecutionGraph(
+                            executorService, allVertices.toArray(new JobVertex[0]));
             executionGraph.start(mainThreadExecutor);
 
             if (taskManagerGateway != null) {
@@ -698,8 +759,6 @@ public class CheckpointCoordinatorTestingUtils {
                         .setMaxConcurrentCheckpoints(Integer.MAX_VALUE)
                         .build();
 
-        private ExecutionGraph executionGraph;
-
         private Collection<OperatorCoordinatorCheckpointContext> coordinatorsToCheckpoint =
                 Collections.emptyList();
 
@@ -708,7 +767,7 @@ public class CheckpointCoordinatorTestingUtils {
         private CompletedCheckpointStore completedCheckpointStore =
                 new StandaloneCompletedCheckpointStore(1);
 
-        private CheckpointStorage checkpointStorage = new MemoryStateBackend();
+        private CheckpointStorage checkpointStorage = new JobManagerCheckpointStorage();
 
         private Executor ioExecutor = Executors.directExecutor();
 
@@ -716,22 +775,24 @@ public class CheckpointCoordinatorTestingUtils {
 
         private ScheduledExecutor timer = new ManuallyTriggeredScheduledExecutor();
 
-        private SharedStateRegistryFactory sharedStateRegistryFactory =
-                SharedStateRegistry.DEFAULT_FACTORY;
-
         private CheckpointFailureManager failureManager =
                 new CheckpointFailureManager(0, NoOpFailJobCall.INSTANCE);
 
         private boolean allowCheckpointsAfterTasksFinished;
 
+        private CheckpointStatsTracker checkpointStatsTracker =
+                new DefaultCheckpointStatsTracker(
+                        1, UnregisteredMetricGroups.createUnregisteredJobManagerJobMetricGroup());
+
+        private BiFunction<
+                        Set<ExecutionJobVertex>,
+                        Map<OperatorID, OperatorState>,
+                        VertexFinishedStateChecker>
+                vertexFinishedStateCheckerFactory = VertexFinishedStateChecker::new;
+
         public CheckpointCoordinatorBuilder setCheckpointCoordinatorConfiguration(
                 CheckpointCoordinatorConfiguration checkpointCoordinatorConfiguration) {
             this.checkpointCoordinatorConfiguration = checkpointCoordinatorConfiguration;
-            return this;
-        }
-
-        public CheckpointCoordinatorBuilder setExecutionGraph(ExecutionGraph executionGraph) {
-            this.executionGraph = executionGraph;
             return this;
         }
 
@@ -775,12 +836,6 @@ public class CheckpointCoordinatorTestingUtils {
             return this;
         }
 
-        public CheckpointCoordinatorBuilder setSharedStateRegistryFactory(
-                SharedStateRegistryFactory sharedStateRegistryFactory) {
-            this.sharedStateRegistryFactory = sharedStateRegistryFactory;
-            return this;
-        }
-
         public CheckpointCoordinatorBuilder setFailureManager(
                 CheckpointFailureManager failureManager) {
             this.failureManager = failureManager;
@@ -798,13 +853,31 @@ public class CheckpointCoordinatorTestingUtils {
             return this;
         }
 
-        public CheckpointCoordinator build() throws Exception {
-            if (executionGraph == null) {
-                executionGraph =
-                        new CheckpointExecutionGraphBuilder()
-                                .addJobVertex(new JobVertexID())
-                                .build();
-            }
+        public CheckpointCoordinatorBuilder setCheckpointStatsTracker(
+                CheckpointStatsTracker checkpointStatsTracker) {
+            this.checkpointStatsTracker = checkpointStatsTracker;
+            return this;
+        }
+
+        public CheckpointCoordinatorBuilder setVertexFinishedStateCheckerFactory(
+                BiFunction<
+                                Set<ExecutionJobVertex>,
+                                Map<OperatorID, OperatorState>,
+                                VertexFinishedStateChecker>
+                        vertexFinishedStateCheckerFactory) {
+            this.vertexFinishedStateCheckerFactory = vertexFinishedStateCheckerFactory;
+            return this;
+        }
+
+        public CheckpointCoordinator build(ScheduledExecutorService executorService)
+                throws Exception {
+            return build(
+                    new CheckpointExecutionGraphBuilder()
+                            .addJobVertex(new JobVertexID())
+                            .build(executorService));
+        }
+
+        public CheckpointCoordinator build(ExecutionGraph executionGraph) throws Exception {
 
             DefaultCheckpointPlanCalculator checkpointPlanCalculator =
                     new DefaultCheckpointPlanCalculator(
@@ -823,10 +896,11 @@ public class CheckpointCoordinatorTestingUtils {
                     ioExecutor,
                     checkpointsCleaner,
                     timer,
-                    sharedStateRegistryFactory,
                     failureManager,
                     checkpointPlanCalculator,
-                    new ExecutionAttemptMappingProvider(executionGraph.getAllExecutionVertices()));
+                    SystemClock.getInstance(),
+                    checkpointStatsTracker,
+                    vertexFinishedStateCheckerFactory);
         }
     }
 
@@ -858,7 +932,7 @@ public class CheckpointCoordinatorTestingUtils {
 
     static final class MockOperatorCheckpointCoordinatorContextBuilder {
         private BiConsumer<Long, CompletableFuture<byte[]>> onCallingCheckpointCoordinator = null;
-        private Consumer<Long> onCallingAfterSourceBarrierInjection = null;
+        private Runnable onCallingAbortCurrentTriggering = null;
         private OperatorID operatorID = null;
 
         public MockOperatorCheckpointCoordinatorContextBuilder setOnCallingCheckpointCoordinator(
@@ -867,10 +941,9 @@ public class CheckpointCoordinatorTestingUtils {
             return this;
         }
 
-        public MockOperatorCheckpointCoordinatorContextBuilder
-                setOnCallingAfterSourceBarrierInjection(
-                        Consumer<Long> onCallingAfterSourceBarrierInjection) {
-            this.onCallingAfterSourceBarrierInjection = onCallingAfterSourceBarrierInjection;
+        public MockOperatorCheckpointCoordinatorContextBuilder setOnCallingAbortCurrentTriggering(
+                Runnable onCallingAbortCurrentTriggering) {
+            this.onCallingAbortCurrentTriggering = onCallingAbortCurrentTriggering;
             return this;
         }
 
@@ -882,9 +955,7 @@ public class CheckpointCoordinatorTestingUtils {
 
         public MockOperatorCoordinatorCheckpointContext build() {
             return new MockOperatorCoordinatorCheckpointContext(
-                    onCallingCheckpointCoordinator,
-                    onCallingAfterSourceBarrierInjection,
-                    operatorID);
+                    onCallingCheckpointCoordinator, onCallingAbortCurrentTriggering, operatorID);
         }
     }
 
@@ -897,17 +968,17 @@ public class CheckpointCoordinatorTestingUtils {
     public static final class MockOperatorCoordinatorCheckpointContext
             implements OperatorCoordinatorCheckpointContext {
         private final BiConsumer<Long, CompletableFuture<byte[]>> onCallingCheckpointCoordinator;
-        private final Consumer<Long> onCallingAfterSourceBarrierInjection;
+        private final Runnable onCallingAbortCurrentTriggering;
         private final OperatorID operatorID;
         private final List<Long> completedCheckpoints;
         private final List<Long> abortedCheckpoints;
 
         private MockOperatorCoordinatorCheckpointContext(
                 BiConsumer<Long, CompletableFuture<byte[]>> onCallingCheckpointCoordinator,
-                Consumer<Long> onCallingAfterSourceBarrierInjection,
+                Runnable onCallingAbortCurrentTriggering,
                 OperatorID operatorID) {
             this.onCallingCheckpointCoordinator = onCallingCheckpointCoordinator;
-            this.onCallingAfterSourceBarrierInjection = onCallingAfterSourceBarrierInjection;
+            this.onCallingAbortCurrentTriggering = onCallingAbortCurrentTriggering;
             this.operatorID = operatorID;
             this.completedCheckpoints = new ArrayList<>();
             this.abortedCheckpoints = new ArrayList<>();
@@ -922,14 +993,11 @@ public class CheckpointCoordinatorTestingUtils {
         }
 
         @Override
-        public void afterSourceBarrierInjection(long checkpointId) {
-            if (onCallingAfterSourceBarrierInjection != null) {
-                onCallingAfterSourceBarrierInjection.accept(checkpointId);
+        public void abortCurrentTriggering() {
+            if (onCallingAbortCurrentTriggering != null) {
+                onCallingAbortCurrentTriggering.run();
             }
         }
-
-        @Override
-        public void abortCurrentTriggering() {}
 
         @Override
         public void notifyCheckpointComplete(long checkpointId) {

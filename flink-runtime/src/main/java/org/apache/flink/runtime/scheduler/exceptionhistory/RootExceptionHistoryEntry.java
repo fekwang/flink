@@ -19,12 +19,19 @@
 package org.apache.flink.runtime.scheduler.exceptionhistory;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.runtime.executiongraph.ErrorInfo;
 import org.apache.flink.runtime.executiongraph.Execution;
+import org.apache.flink.runtime.failure.FailureEnricherUtils;
 import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
+import org.apache.flink.util.Preconditions;
 
 import javax.annotation.Nullable;
+import javax.annotation.concurrent.NotThreadSafe;
 
-import java.util.Set;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
 
@@ -32,11 +39,12 @@ import java.util.stream.StreamSupport;
  * {@code RootExceptionHistoryEntry} extending {@link ExceptionHistoryEntry} by providing a list of
  * {@code ExceptionHistoryEntry} instances to store concurrently caught failures.
  */
+@NotThreadSafe
 public class RootExceptionHistoryEntry extends ExceptionHistoryEntry {
 
     private static final long serialVersionUID = -7647332765867297434L;
 
-    private final Set<ExceptionHistoryEntry> concurrentExceptions;
+    private final Collection<ExceptionHistoryEntry> concurrentExceptions;
 
     /**
      * Creates a {@code RootExceptionHistoryEntry} based on the passed {@link
@@ -61,6 +69,7 @@ public class RootExceptionHistoryEntry extends ExceptionHistoryEntry {
         return createRootExceptionHistoryEntry(
                 snapshot.getRootCause(),
                 snapshot.getTimestamp(),
+                snapshot.getFailureLabels(),
                 failingTaskName,
                 taskManagerLocation,
                 snapshot.getConcurrentlyFailedExecution());
@@ -73,6 +82,7 @@ public class RootExceptionHistoryEntry extends ExceptionHistoryEntry {
      *
      * @param cause The reason for the failure.
      * @param timestamp The time the failure was caught.
+     * @param failureLabels Map of string labels associated with the failure.
      * @param executions The {@link Execution} instances that shall be analyzed for failures.
      * @return The {@code RootExceptionHistoryEntry} instance.
      * @throws NullPointerException if {@code failure} is {@code null}.
@@ -80,28 +90,73 @@ public class RootExceptionHistoryEntry extends ExceptionHistoryEntry {
      *     0}.
      */
     public static RootExceptionHistoryEntry fromGlobalFailure(
-            Throwable cause, long timestamp, Iterable<Execution> executions) {
-        return createRootExceptionHistoryEntry(cause, timestamp, null, null, executions);
+            Throwable cause,
+            long timestamp,
+            CompletableFuture<Map<String, String>> failureLabels,
+            Iterable<Execution> executions) {
+        return createRootExceptionHistoryEntry(
+                cause, timestamp, failureLabels, null, null, executions);
+    }
+
+    public static RootExceptionHistoryEntry fromExceptionHistoryEntry(
+            ExceptionHistoryEntry entry, Collection<ExceptionHistoryEntry> entries) {
+        return new RootExceptionHistoryEntry(
+                entry.getException(),
+                entry.getTimestamp(),
+                entry.getFailureLabelsFuture(),
+                null,
+                null,
+                entries);
+    }
+
+    /**
+     * Creates a {@code RootExceptionHistoryEntry} based on the passed {@link ErrorInfo}. No
+     * concurrent failures will be added.
+     *
+     * @param errorInfo The failure information that shall be used to initialize the {@code
+     *     RootExceptionHistoryEntry}.
+     * @return The {@code RootExceptionHistoryEntry} instance.
+     * @throws NullPointerException if {@code errorInfo} is {@code null} or the passed info does not
+     *     contain a {@code Throwable}.
+     * @throws IllegalArgumentException if the passed {@code timestamp} is not bigger than {@code
+     *     0}.
+     */
+    public static RootExceptionHistoryEntry fromGlobalFailure(ErrorInfo errorInfo) {
+        Preconditions.checkNotNull(errorInfo, "errorInfo");
+        return fromGlobalFailure(
+                errorInfo.getException(),
+                errorInfo.getTimestamp(),
+                FailureEnricherUtils.EMPTY_FAILURE_LABELS,
+                Collections.emptyList());
     }
 
     private static RootExceptionHistoryEntry createRootExceptionHistoryEntry(
             Throwable cause,
             long timestamp,
+            CompletableFuture<Map<String, String>> failureLabels,
             @Nullable String failingTaskName,
             @Nullable TaskManagerLocation taskManagerLocation,
             Iterable<Execution> executions) {
         return new RootExceptionHistoryEntry(
                 cause,
                 timestamp,
+                failureLabels,
                 failingTaskName,
                 taskManagerLocation,
-                StreamSupport.stream(executions.spliterator(), false)
-                        .filter(execution -> execution.getFailureInfo().isPresent())
-                        .map(
-                                execution ->
-                                        ExceptionHistoryEntry.create(
-                                                execution, execution.getVertexWithAttempt()))
-                        .collect(Collectors.toSet()));
+                createExceptionHistoryEntries(executions));
+    }
+
+    private static Collection<ExceptionHistoryEntry> createExceptionHistoryEntries(
+            Iterable<Execution> executions) {
+        return StreamSupport.stream(executions.spliterator(), false)
+                .filter(execution -> execution.getFailureInfo().isPresent())
+                .map(
+                        execution ->
+                                ExceptionHistoryEntry.create(
+                                        execution,
+                                        execution.getVertexWithAttempt(),
+                                        FailureEnricherUtils.EMPTY_FAILURE_LABELS))
+                .collect(Collectors.toList());
     }
 
     /**
@@ -109,6 +164,7 @@ public class RootExceptionHistoryEntry extends ExceptionHistoryEntry {
      *
      * @param cause The reason for the failure.
      * @param timestamp The time the failure was caught.
+     * @param failureLabels labels associated with the failure.
      * @param failingTaskName The name of the task that failed.
      * @param taskManagerLocation The host the task was running on.
      * @throws NullPointerException if {@code cause} is {@code null}.
@@ -119,11 +175,16 @@ public class RootExceptionHistoryEntry extends ExceptionHistoryEntry {
     public RootExceptionHistoryEntry(
             Throwable cause,
             long timestamp,
+            CompletableFuture<Map<String, String>> failureLabels,
             @Nullable String failingTaskName,
             @Nullable TaskManagerLocation taskManagerLocation,
-            Set<ExceptionHistoryEntry> concurrentExceptions) {
-        super(cause, timestamp, failingTaskName, taskManagerLocation);
+            Collection<ExceptionHistoryEntry> concurrentExceptions) {
+        super(cause, timestamp, failureLabels, failingTaskName, taskManagerLocation);
         this.concurrentExceptions = concurrentExceptions;
+    }
+
+    public void addConcurrentExceptions(Iterable<Execution> concurrentlyExecutions) {
+        this.concurrentExceptions.addAll(createExceptionHistoryEntries(concurrentlyExecutions));
     }
 
     public Iterable<ExceptionHistoryEntry> getConcurrentExceptions() {

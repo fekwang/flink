@@ -20,8 +20,8 @@ package org.apache.flink.table.catalog;
 
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.table.api.Schema;
-import org.apache.flink.table.api.TableSchema;
 import org.apache.flink.table.factories.DynamicTableFactory;
+import org.apache.flink.table.legacy.api.TableSchema;
 
 import java.util.Map;
 import java.util.Optional;
@@ -36,8 +36,10 @@ import java.util.Optional;
 public interface CatalogBaseTable {
 
     /** The kind of {@link CatalogBaseTable}. */
+    @PublicEvolving
     enum TableKind {
         TABLE,
+        MATERIALIZED_TABLE,
         VIEW
     }
 
@@ -49,7 +51,8 @@ public interface CatalogBaseTable {
      *
      * <p>In case of {@link CatalogTable}, these options may determine the kind of connector and its
      * configuration for accessing the data in the external system. See {@link DynamicTableFactory}
-     * for more information.
+     * for more information. If a {@link CatalogTable} should not be serializable, an implementation
+     * can simply throw a runtime exception in this method.
      */
     Map<String, String> getOptions();
 

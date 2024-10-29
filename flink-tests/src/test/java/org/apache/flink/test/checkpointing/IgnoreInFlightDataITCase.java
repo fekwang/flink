@@ -25,16 +25,17 @@ import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.core.execution.CheckpointingMode;
 import org.apache.flink.core.testutils.OneShotLatch;
 import org.apache.flink.runtime.operators.testutils.ExpectedTestException;
 import org.apache.flink.runtime.state.FunctionInitializationContext;
 import org.apache.flink.runtime.state.FunctionSnapshotContext;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.streaming.api.CheckpointingMode;
 import org.apache.flink.streaming.api.checkpoint.CheckpointedFunction;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.sink.SinkFunction;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.sink.legacy.SinkFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction;
+import org.apache.flink.streaming.util.RestartStrategyUtils;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.testutils.junit.SharedObjects;
 import org.apache.flink.testutils.junit.SharedReference;
@@ -51,7 +52,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
 import static java.util.Collections.singletonList;
-import static org.apache.flink.api.common.restartstrategy.RestartStrategies.fixedDelayRestart;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.lessThan;
 import static org.junit.Assert.assertEquals;
@@ -75,6 +75,7 @@ public class IgnoreInFlightDataITCase extends TestLogger {
     private SharedReference<AtomicLong> resultBeforeFail;
     private SharedReference<AtomicLong> result;
     private SharedReference<AtomicInteger> lastCheckpointValue;
+    private int checkpointInterval = 5;
 
     private static Configuration getConfiguration() {
         Configuration config = new Configuration();
@@ -116,13 +117,15 @@ public class IgnoreInFlightDataITCase extends TestLogger {
         setupSharedObjects();
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setParallelism(PARALLELISM);
-        env.enableCheckpointing(10);
+        // Increase interval twice on each attempt in order to give more time for the Source to send
+        // all required data before the first checkpoint.
+        env.enableCheckpointing(checkpointInterval *= 2);
         env.disableOperatorChaining();
         env.getCheckpointConfig().enableUnalignedCheckpoints();
-        env.getCheckpointConfig().setAlignmentTimeout(Duration.ZERO);
-        env.getCheckpointConfig().setCheckpointingMode(CheckpointingMode.EXACTLY_ONCE);
+        env.getCheckpointConfig().setAlignedCheckpointTimeout(Duration.ZERO);
+        env.getCheckpointConfig().setCheckpointingConsistencyMode(CheckpointingMode.EXACTLY_ONCE);
         env.getCheckpointConfig().setCheckpointIdOfIgnoredInFlightData(1);
-        env.setRestartStrategy(fixedDelayRestart(1, 0));
+        RestartStrategyUtils.configureFixedDelayRestartStrategy(env, 1, 0L);
 
         env.addSource(new NumberSource(lastCheckpointValue))
                 // map for having parallel execution.
@@ -258,6 +261,17 @@ public class IgnoreInFlightDataITCase extends TestLogger {
 
         @Override
         public void snapshotState(FunctionSnapshotContext context) throws Exception {
+            Iterator<Integer> integerIterator = valueState.get().iterator();
+
+            if (!integerIterator.hasNext()
+                    || integerIterator.next() < PARALLELISM
+                    || (context.getCheckpointId() > 1
+                            && lastCheckpointValue.get().get() < PARALLELISM)) {
+                // Try to restart task.
+                throw new RuntimeException(
+                        "Not enough data to guarantee the in-flight data were generated before the first checkpoint");
+            }
+
             if (context.getCheckpointId() > 2) {
                 // It is possible if checkpoint was triggered too fast after restart.
                 return; // Just ignore it.
@@ -265,14 +279,6 @@ public class IgnoreInFlightDataITCase extends TestLogger {
 
             if (context.getCheckpointId() == 2) {
                 throw new ExpectedTestException("The planned fail on the second checkpoint");
-            }
-
-            Iterator<Integer> integerIterator = valueState.get().iterator();
-
-            if (!integerIterator.hasNext() || integerIterator.next() < PARALLELISM) {
-                // Try to restart task.
-                throw new RuntimeException(
-                        "Not enough data to guarantee the in-flight data were generated before the first checkpoint");
             }
 
             lastCheckpointValue.get().set(valueState.get().iterator().next());
@@ -297,7 +303,7 @@ public class IgnoreInFlightDataITCase extends TestLogger {
         @Override
         public Integer map(Integer value) throws Exception {
             // Allow working only one subtask until the checkpoint barrier reaches the sink.
-            if (getRuntimeContext().getIndexOfThisSubtask() > 0) {
+            if (getRuntimeContext().getTaskInfo().getIndexOfThisSubtask() > 0) {
                 checkpointReachSinkLatch.get().await();
             }
 

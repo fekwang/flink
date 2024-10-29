@@ -25,8 +25,8 @@ import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.DelegatingConfiguration;
 import org.apache.flink.configuration.FallbackKey;
+import org.apache.flink.configuration.GlobalConfiguration;
 import org.apache.flink.configuration.ReadableConfig;
-import org.apache.flink.table.api.NoMatchingTableFactoryException;
 import org.apache.flink.table.api.TableException;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.Catalog;
@@ -38,8 +38,10 @@ import org.apache.flink.table.connector.format.DecodingFormat;
 import org.apache.flink.table.connector.format.EncodingFormat;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.source.DynamicTableSource;
+import org.apache.flink.table.legacy.factories.TableFactory;
 import org.apache.flink.table.module.Module;
 import org.apache.flink.table.utils.EncodingUtils;
+import org.apache.flink.table.watermark.WatermarkEmitStrategy;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -47,16 +49,17 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nullable;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -65,6 +68,8 @@ import java.util.stream.StreamSupport;
 
 import static org.apache.flink.configuration.ConfigurationUtils.canBePrefixMap;
 import static org.apache.flink.configuration.ConfigurationUtils.filterPrefixMapKey;
+import static org.apache.flink.configuration.GlobalConfiguration.HIDDEN_CONTENT;
+import static org.apache.flink.table.factories.ManagedTableFactory.DEFAULT_IDENTIFIER;
 import static org.apache.flink.table.module.CommonModuleOptions.MODULE_TYPE;
 
 /** Utility for working with {@link Factory}s. */
@@ -109,6 +114,67 @@ public final class FactoryUtil {
                                     + "By default, if this option is not defined, the planner will derive the parallelism "
                                     + "for each statement individually by also considering the global configuration.");
 
+    public static final ConfigOption<List<String>> SQL_GATEWAY_ENDPOINT_TYPE =
+            ConfigOptions.key("sql-gateway.endpoint.type")
+                    .stringType()
+                    .asList()
+                    .defaultValues("rest")
+                    .withDescription("Specify the endpoints that are used.");
+
+    public static final ConfigOption<Integer> SOURCE_PARALLELISM =
+            ConfigOptions.key("scan.parallelism")
+                    .intType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Defines a custom parallelism for the source. "
+                                    + "By default, if this option is not defined, the planner will derive the parallelism "
+                                    + "for each statement individually by also considering the global configuration.");
+
+    public static final ConfigOption<WatermarkEmitStrategy> WATERMARK_EMIT_STRATEGY =
+            ConfigOptions.key("scan.watermark.emit.strategy")
+                    .enumType(WatermarkEmitStrategy.class)
+                    .defaultValue(WatermarkEmitStrategy.ON_PERIODIC)
+                    .withDescription(
+                            "The strategy for emitting watermark. "
+                                    + "'on-event' means emitting watermark for every event. "
+                                    + "'on-periodic' means emitting watermark periodically. "
+                                    + "The default strategy is 'on-periodic'");
+
+    public static final ConfigOption<String> WATERMARK_ALIGNMENT_GROUP =
+            ConfigOptions.key("scan.watermark.alignment.group")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription("The watermark alignment group name.");
+
+    public static final ConfigOption<Duration> WATERMARK_ALIGNMENT_MAX_DRIFT =
+            ConfigOptions.key("scan.watermark.alignment.max-drift")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription("The max allowed watermark drift.");
+
+    public static final ConfigOption<Duration> WATERMARK_ALIGNMENT_UPDATE_INTERVAL =
+            ConfigOptions.key("scan.watermark.alignment.update-interval")
+                    .durationType()
+                    .defaultValue(Duration.ofMillis(1000))
+                    .withDescription("Update interval to align watermark.");
+
+    public static final ConfigOption<Duration> SOURCE_IDLE_TIMEOUT =
+            ConfigOptions.key("scan.watermark.idle-timeout")
+                    .durationType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "When a source do not receive any elements for the timeout time, "
+                                    + "it will be marked as temporarily idle. This allows downstream "
+                                    + "tasks to advance their watermarks without the need to wait for "
+                                    + "watermarks from this source while it is idle.");
+
+    public static final ConfigOption<String> WORKFLOW_SCHEDULER_TYPE =
+            ConfigOptions.key("workflow-scheduler.type")
+                    .stringType()
+                    .noDefaultValue()
+                    .withDescription(
+                            "Specify the workflow scheduler type that is used for materialized table.");
+
     /**
      * Suffix for keys of {@link ConfigOption} in case a connector requires multiple formats (e.g.
      * for both key and value).
@@ -124,24 +190,46 @@ public final class FactoryUtil {
      */
     public static final String PLACEHOLDER_SYMBOL = "#";
 
+    private static final Set<ConfigOption<?>> watermarkOptionSet;
+
+    static {
+        Set<ConfigOption<?>> set = new HashSet<>();
+        set.add(WATERMARK_EMIT_STRATEGY);
+        set.add(WATERMARK_ALIGNMENT_GROUP);
+        set.add(WATERMARK_ALIGNMENT_MAX_DRIFT);
+        set.add(WATERMARK_ALIGNMENT_UPDATE_INTERVAL);
+        set.add(SOURCE_IDLE_TIMEOUT);
+        watermarkOptionSet = Collections.unmodifiableSet(set);
+    }
+
     /**
      * Creates a {@link DynamicTableSource} from a {@link CatalogTable}.
      *
-     * <p>It considers {@link Catalog#getFactory()} if provided.
+     * <p>If {@param preferredFactory} is passed, the table source is created from that factory.
+     * Otherwise, an attempt is made to discover a matching factory using Java SPI (see {@link
+     * Factory} for details).
      */
-    public static DynamicTableSource createTableSource(
-            @Nullable Catalog catalog,
+    public static DynamicTableSource createDynamicTableSource(
+            @Nullable DynamicTableSourceFactory preferredFactory,
             ObjectIdentifier objectIdentifier,
             ResolvedCatalogTable catalogTable,
+            Map<String, String> enrichmentOptions,
             ReadableConfig configuration,
             ClassLoader classLoader,
             boolean isTemporary) {
         final DefaultDynamicTableContext context =
                 new DefaultDynamicTableContext(
-                        objectIdentifier, catalogTable, configuration, classLoader, isTemporary);
+                        objectIdentifier,
+                        catalogTable,
+                        enrichmentOptions,
+                        configuration,
+                        classLoader,
+                        isTemporary);
         try {
             final DynamicTableSourceFactory factory =
-                    getDynamicTableFactory(DynamicTableSourceFactory.class, catalog, context);
+                    preferredFactory != null
+                            ? preferredFactory
+                            : discoverTableFactory(DynamicTableSourceFactory.class, context);
             return factory.createDynamicTableSource(context);
         } catch (Throwable t) {
             throw new ValidationException(
@@ -159,11 +247,37 @@ public final class FactoryUtil {
     }
 
     /**
-     * Creates a {@link DynamicTableSink} from a {@link CatalogTable}.
+     * @deprecated Use {@link #createDynamicTableSource(DynamicTableSourceFactory, ObjectIdentifier,
+     *     ResolvedCatalogTable, Map, ReadableConfig, ClassLoader, boolean)}
+     */
+    @Deprecated
+    public static DynamicTableSource createDynamicTableSource(
+            @Nullable DynamicTableSourceFactory preferredFactory,
+            ObjectIdentifier objectIdentifier,
+            ResolvedCatalogTable catalogTable,
+            ReadableConfig configuration,
+            ClassLoader classLoader,
+            boolean isTemporary) {
+        return createDynamicTableSource(
+                preferredFactory,
+                objectIdentifier,
+                catalogTable,
+                Collections.emptyMap(),
+                configuration,
+                classLoader,
+                isTemporary);
+    }
+
+    /**
+     * Creates a {@link DynamicTableSource} from a {@link CatalogTable}.
      *
      * <p>It considers {@link Catalog#getFactory()} if provided.
+     *
+     * @deprecated Use {@link #createDynamicTableSource(DynamicTableSourceFactory, ObjectIdentifier,
+     *     ResolvedCatalogTable, Map, ReadableConfig, ClassLoader, boolean)} instead.
      */
-    public static DynamicTableSink createTableSink(
+    @Deprecated
+    public static DynamicTableSource createTableSource(
             @Nullable Catalog catalog,
             ObjectIdentifier objectIdentifier,
             ResolvedCatalogTable catalogTable,
@@ -172,10 +286,53 @@ public final class FactoryUtil {
             boolean isTemporary) {
         final DefaultDynamicTableContext context =
                 new DefaultDynamicTableContext(
-                        objectIdentifier, catalogTable, configuration, classLoader, isTemporary);
+                        objectIdentifier,
+                        catalogTable,
+                        Collections.emptyMap(),
+                        configuration,
+                        classLoader,
+                        isTemporary);
+
+        return createDynamicTableSource(
+                getDynamicTableFactory(DynamicTableSourceFactory.class, catalog, context),
+                objectIdentifier,
+                catalogTable,
+                Collections.emptyMap(),
+                configuration,
+                classLoader,
+                isTemporary);
+    }
+
+    /**
+     * Creates a {@link DynamicTableSink} from a {@link CatalogTable}.
+     *
+     * <p>If {@param preferredFactory} is passed, the table sink is created from that factory.
+     * Otherwise, an attempt is made to discover a matching factory using Java SPI (see {@link
+     * Factory} for details).
+     */
+    public static DynamicTableSink createDynamicTableSink(
+            @Nullable DynamicTableSinkFactory preferredFactory,
+            ObjectIdentifier objectIdentifier,
+            ResolvedCatalogTable catalogTable,
+            Map<String, String> enrichmentOptions,
+            ReadableConfig configuration,
+            ClassLoader classLoader,
+            boolean isTemporary) {
+        final DefaultDynamicTableContext context =
+                new DefaultDynamicTableContext(
+                        objectIdentifier,
+                        catalogTable,
+                        enrichmentOptions,
+                        configuration,
+                        classLoader,
+                        isTemporary);
+
         try {
             final DynamicTableSinkFactory factory =
-                    getDynamicTableFactory(DynamicTableSinkFactory.class, catalog, context);
+                    preferredFactory != null
+                            ? preferredFactory
+                            : discoverTableFactory(DynamicTableSinkFactory.class, context);
+
             return factory.createDynamicTableSink(context);
         } catch (Throwable t) {
             throw new ValidationException(
@@ -193,6 +350,63 @@ public final class FactoryUtil {
     }
 
     /**
+     * @deprecated Use {@link #createDynamicTableSink(DynamicTableSinkFactory, ObjectIdentifier,
+     *     ResolvedCatalogTable, Map, ReadableConfig, ClassLoader, boolean)}
+     */
+    @Deprecated
+    public static DynamicTableSink createDynamicTableSink(
+            @Nullable DynamicTableSinkFactory preferredFactory,
+            ObjectIdentifier objectIdentifier,
+            ResolvedCatalogTable catalogTable,
+            ReadableConfig configuration,
+            ClassLoader classLoader,
+            boolean isTemporary) {
+        return createDynamicTableSink(
+                preferredFactory,
+                objectIdentifier,
+                catalogTable,
+                Collections.emptyMap(),
+                configuration,
+                classLoader,
+                isTemporary);
+    }
+
+    /**
+     * Creates a {@link DynamicTableSink} from a {@link CatalogTable}.
+     *
+     * <p>It considers {@link Catalog#getFactory()} if provided.
+     *
+     * @deprecated Use {@link #createDynamicTableSink(DynamicTableSinkFactory, ObjectIdentifier,
+     *     ResolvedCatalogTable, Map, ReadableConfig, ClassLoader, boolean)} instead.
+     */
+    @Deprecated
+    public static DynamicTableSink createTableSink(
+            @Nullable Catalog catalog,
+            ObjectIdentifier objectIdentifier,
+            ResolvedCatalogTable catalogTable,
+            ReadableConfig configuration,
+            ClassLoader classLoader,
+            boolean isTemporary) {
+        final DefaultDynamicTableContext context =
+                new DefaultDynamicTableContext(
+                        objectIdentifier,
+                        catalogTable,
+                        Collections.emptyMap(),
+                        configuration,
+                        classLoader,
+                        isTemporary);
+
+        return createDynamicTableSink(
+                getDynamicTableFactory(DynamicTableSinkFactory.class, catalog, context),
+                objectIdentifier,
+                catalogTable,
+                Collections.emptyMap(),
+                configuration,
+                classLoader,
+                isTemporary);
+    }
+
+    /**
      * Creates a utility that helps validating options for a {@link CatalogFactory}.
      *
      * <p>Note: This utility checks for left-over options in the final step.
@@ -200,6 +414,16 @@ public final class FactoryUtil {
     public static CatalogFactoryHelper createCatalogFactoryHelper(
             CatalogFactory factory, CatalogFactory.Context context) {
         return new CatalogFactoryHelper(factory, context);
+    }
+
+    /**
+     * Creates a utility that helps validating options for a {@link CatalogStoreFactory}.
+     *
+     * <p>Note: This utility checks for left-over options in the final step.
+     */
+    public static CatalogStoreFactoryHelper createCatalogStoreFactoryHelper(
+            CatalogStoreFactory factory, CatalogStoreFactory.Context context) {
+        return new CatalogStoreFactoryHelper(factory, context);
     }
 
     /**
@@ -213,7 +437,8 @@ public final class FactoryUtil {
     }
 
     /**
-     * Creates a utility that helps in discovering formats and validating all options for a {@link
+     * Creates a utility that helps in discovering formats, merging options with {@link
+     * DynamicTableFactory.Context#getEnrichmentOptions()} and validating them all for a {@link
      * DynamicTableFactory}.
      *
      * <p>The following example sketches the usage:
@@ -239,7 +464,10 @@ public final class FactoryUtil {
      * 'value.format', then the format prefix is 'value.json'. The format prefix is used to project
      * the options for the format factory.
      *
-     * <p>Note: This utility checks for left-over options in the final step.
+     * <p>Note: When created, this utility merges the options from {@link
+     * DynamicTableFactory.Context#getEnrichmentOptions()} using {@link
+     * DynamicTableFactory#forwardOptions()}. When invoking {@link TableFactoryHelper#validate()},
+     * this utility checks for left-over options in the final step.
      */
     public static TableFactoryHelper createTableFactoryHelper(
             DynamicTableFactory factory, DynamicTableFactory.Context context) {
@@ -402,6 +630,7 @@ public final class FactoryUtil {
                             factoryClass.getName(),
                             foundFactories.stream()
                                     .map(Factory::factoryIdentifier)
+                                    .filter(identifier -> !DEFAULT_IDENTIFIER.equals(identifier))
                                     .distinct()
                                     .sorted()
                                     .collect(Collectors.joining("\n"))));
@@ -527,31 +756,32 @@ public final class FactoryUtil {
         }
     }
 
+    /** Returns the {@link DynamicTableFactory} via {@link Catalog}. */
+    public static <T extends DynamicTableFactory> Optional<T> getDynamicTableFactory(
+            Class<T> factoryClass, @Nullable Catalog catalog) {
+        if (catalog == null) {
+            return Optional.empty();
+        }
+
+        return catalog.getFactory()
+                .map(f -> factoryClass.isAssignableFrom(f.getClass()) ? (T) f : null);
+    }
+
     // --------------------------------------------------------------------------------------------
     // Helper methods
     // --------------------------------------------------------------------------------------------
 
-    @SuppressWarnings("unchecked")
     private static <T extends DynamicTableFactory> T getDynamicTableFactory(
-            Class<T> factoryClass, @Nullable Catalog catalog, DefaultDynamicTableContext context) {
-        // catalog factory has highest precedence
-        if (catalog != null) {
-            final Factory factory =
-                    catalog.getFactory()
-                            .filter(f -> factoryClass.isAssignableFrom(f.getClass()))
-                            .orElse(null);
-            if (factory != null) {
-                return (T) factory;
-            }
-        }
+            Class<T> factoryClass, @Nullable Catalog catalog, DynamicTableFactory.Context context) {
+        return getDynamicTableFactory(factoryClass, catalog)
+                .orElseGet(() -> discoverTableFactory(factoryClass, context));
+    }
 
-        // fallback to factory discovery
+    private static <T extends DynamicTableFactory> T discoverTableFactory(
+            Class<T> factoryClass, DynamicTableFactory.Context context) {
         final String connectorOption = context.getCatalogTable().getOptions().get(CONNECTOR.key());
         if (connectorOption == null) {
-            throw new ValidationException(
-                    String.format(
-                            "Table options do not contain an option key '%s' for discovering a connector.",
-                            CONNECTOR.key()));
+            return discoverManagedTableFactory(context.getClassLoader(), factoryClass);
         }
         try {
             return discoverFactory(context.getClassLoader(), factoryClass, connectorOption);
@@ -574,7 +804,7 @@ public final class FactoryUtil {
     }
 
     private static ValidationException enrichNoMatchingConnectorError(
-            Class<?> factoryClass, DefaultDynamicTableContext context, String connectorOption) {
+            Class<?> factoryClass, DynamicTableFactory.Context context, String connectorOption) {
         final DynamicTableFactory factory;
         try {
             factory =
@@ -615,18 +845,76 @@ public final class FactoryUtil {
         }
     }
 
-    private static List<Factory> discoverFactories(ClassLoader classLoader) {
-        try {
-            final List<Factory> result = new LinkedList<>();
-            ServiceLoader.load(Factory.class, classLoader).iterator().forEachRemaining(result::add);
-            return result;
-        } catch (ServiceConfigurationError e) {
-            LOG.error("Could not load service provider for factories.", e);
-            throw new TableException("Could not load service provider for factories.", e);
+    @SuppressWarnings("unchecked")
+    static <T extends DynamicTableFactory> T discoverManagedTableFactory(
+            ClassLoader classLoader, Class<T> implementClass) {
+        final List<Factory> factories = discoverFactories(classLoader);
+
+        final List<Factory> foundFactories =
+                factories.stream()
+                        .filter(f -> ManagedTableFactory.class.isAssignableFrom(f.getClass()))
+                        .filter(f -> implementClass.isAssignableFrom(f.getClass()))
+                        .collect(Collectors.toList());
+
+        if (foundFactories.isEmpty()) {
+            throw new ValidationException(
+                    String.format(
+                            "Table options do not contain an option key 'connector' for discovering a connector. "
+                                    + "Therefore, Flink assumes a managed table. However, a managed table factory "
+                                    + "that implements %s is not in the classpath.",
+                            implementClass.getName()));
         }
+
+        if (foundFactories.size() > 1) {
+            throw new ValidationException(
+                    String.format(
+                            "Multiple factories for managed table found in the classpath.\n\n"
+                                    + "Ambiguous factory classes are:\n\n"
+                                    + "%s",
+                            foundFactories.stream()
+                                    .map(f -> f.getClass().getName())
+                                    .sorted()
+                                    .collect(Collectors.joining("\n"))));
+        }
+
+        return (T) foundFactories.get(0);
     }
 
-    private static String stringifyOption(String key, String value) {
+    static List<Factory> discoverFactories(ClassLoader classLoader) {
+        final Iterator<Factory> serviceLoaderIterator =
+                ServiceLoader.load(Factory.class, classLoader).iterator();
+
+        final List<Factory> loadResults = new ArrayList<>();
+        while (true) {
+            try {
+                // error handling should also be applied to the hasNext() call because service
+                // loading might cause problems here as well
+                if (!serviceLoaderIterator.hasNext()) {
+                    break;
+                }
+
+                loadResults.add(serviceLoaderIterator.next());
+            } catch (Throwable t) {
+                if (t instanceof NoClassDefFoundError) {
+                    LOG.debug(
+                            "NoClassDefFoundError when loading a "
+                                    + Factory.class.getCanonicalName()
+                                    + ". This is expected when trying to load a format dependency but no flink-connector-files is loaded.",
+                            t);
+                } else {
+                    throw new TableException(
+                            "Unexpected error when trying to load service provider.", t);
+                }
+            }
+        }
+
+        return loadResults;
+    }
+
+    public static String stringifyOption(String key, String value) {
+        if (GlobalConfiguration.isSensitive(key)) {
+            value = HIDDEN_CONTENT;
+        }
         return String.format(
                 "'%s'='%s'",
                 EncodingUtils.escapeSingleQuotes(key), EncodingUtils.escapeSingleQuotes(value));
@@ -682,7 +970,9 @@ public final class FactoryUtil {
     // Helper classes
     // --------------------------------------------------------------------------------------------
 
-    private static class FactoryHelper<F extends Factory> {
+    /** Base helper utility for validating all options for a {@link Factory}. */
+    @PublicEvolving
+    public static class FactoryHelper<F extends Factory> {
 
         protected final F factory;
 
@@ -692,7 +982,7 @@ public final class FactoryUtil {
 
         protected final Set<String> deprecatedOptionKeys;
 
-        FactoryHelper(
+        public FactoryHelper(
                 F factory, Map<String, String> configuration, ConfigOption<?>... implicitOptions) {
             this.factory = factory;
             this.allOptions = Configuration.fromMap(configuration);
@@ -722,6 +1012,7 @@ public final class FactoryUtil {
                     allOptions.keySet(),
                     consumedOptionKeys,
                     deprecatedOptionKeys);
+            validateWatermarkOptions(factory.factoryIdentifier(), allOptions);
         }
 
         /**
@@ -755,6 +1046,7 @@ public final class FactoryUtil {
      *
      * @see #createCatalogFactoryHelper(CatalogFactory, CatalogFactory.Context)
      */
+    @PublicEvolving
     public static class CatalogFactoryHelper extends FactoryHelper<CatalogFactory> {
 
         public CatalogFactoryHelper(CatalogFactory catalogFactory, CatalogFactory.Context context) {
@@ -763,10 +1055,24 @@ public final class FactoryUtil {
     }
 
     /**
+     * Helper utility for validating all options for a {@link CatalogStoreFactory}.
+     *
+     * @see #createCatalogStoreFactoryHelper(CatalogStoreFactory, CatalogStoreFactory.Context)
+     */
+    @PublicEvolving
+    public static class CatalogStoreFactoryHelper extends FactoryHelper<CatalogStoreFactory> {
+        public CatalogStoreFactoryHelper(
+                CatalogStoreFactory catalogStoreFactory, CatalogStoreFactory.Context context) {
+            super(catalogStoreFactory, context.getOptions(), PROPERTY_VERSION);
+        }
+    }
+
+    /**
      * Helper utility for validating all options for a {@link ModuleFactory}.
      *
      * @see #createModuleFactoryHelper(ModuleFactory, ModuleFactory.Context)
      */
+    @PublicEvolving
     public static class ModuleFactoryHelper extends FactoryHelper<ModuleFactory> {
         public ModuleFactoryHelper(ModuleFactory moduleFactory, ModuleFactory.Context context) {
             super(moduleFactory, context.getOptions(), PROPERTY_VERSION);
@@ -779,9 +1085,12 @@ public final class FactoryUtil {
      *
      * @see #createTableFactoryHelper(DynamicTableFactory, DynamicTableFactory.Context)
      */
+    @PublicEvolving
     public static class TableFactoryHelper extends FactoryHelper<DynamicTableFactory> {
 
         private final DynamicTableFactory.Context context;
+
+        private final Configuration enrichingOptions;
 
         private TableFactoryHelper(
                 DynamicTableFactory tableFactory, DynamicTableFactory.Context context) {
@@ -791,6 +1100,20 @@ public final class FactoryUtil {
                     PROPERTY_VERSION,
                     CONNECTOR);
             this.context = context;
+            this.enrichingOptions = Configuration.fromMap(context.getEnrichmentOptions());
+            this.forwardOptions();
+            this.consumedOptionKeys.addAll(
+                    watermarkOptionSet.stream().map(ConfigOption::key).collect(Collectors.toSet()));
+        }
+
+        /**
+         * Returns all options currently being consumed by the factory. This method returns the
+         * options already merged with {@link DynamicTableFactory.Context#getEnrichmentOptions()},
+         * using {@link DynamicTableFactory#forwardOptions()} as reference of mergeable options.
+         */
+        @Override
+        public ReadableConfig getOptions() {
+            return super.getOptions();
         }
 
         /**
@@ -821,7 +1144,8 @@ public final class FactoryUtil {
                                 String formatPrefix = formatPrefix(formatFactory, formatOption);
                                 try {
                                     return formatFactory.createDecodingFormat(
-                                            context, projectOptions(formatPrefix));
+                                            context,
+                                            createFormatOptions(formatPrefix, formatFactory));
                                 } catch (Throwable t) {
                                     throw new ValidationException(
                                             String.format(
@@ -861,7 +1185,8 @@ public final class FactoryUtil {
                                 String formatPrefix = formatPrefix(formatFactory, formatOption);
                                 try {
                                     return formatFactory.createEncodingFormat(
-                                            context, projectOptions(formatPrefix));
+                                            context,
+                                            createFormatOptions(formatPrefix, formatFactory));
                                 } catch (Throwable t) {
                                     throw new ValidationException(
                                             String.format(
@@ -875,9 +1200,24 @@ public final class FactoryUtil {
 
         // ----------------------------------------------------------------------------------------
 
+        /**
+         * Forwards the options declared in {@link DynamicTableFactory#forwardOptions()} and
+         * possibly {@link FormatFactory#forwardOptions()} from {@link
+         * DynamicTableFactory.Context#getEnrichmentOptions()} to the final options, if present.
+         */
+        @SuppressWarnings({"unchecked"})
+        private void forwardOptions() {
+            for (ConfigOption<?> option : factory.forwardOptions()) {
+                enrichingOptions
+                        .getOptional(option)
+                        .ifPresent(o -> allOptions.set((ConfigOption<? super Object>) option, o));
+            }
+        }
+
         private <F extends Factory> Optional<F> discoverOptionalFormatFactory(
                 Class<F> formatFactoryClass, ConfigOption<String> formatOption) {
             final String identifier = allOptions.get(formatOption);
+            checkFormatIdentifierMatchesWithEnrichingOptions(formatOption, identifier);
             if (identifier == null) {
                 return Optional.empty();
             }
@@ -910,8 +1250,60 @@ public final class FactoryUtil {
             return getFormatPrefix(formatOption, identifier);
         }
 
-        private ReadableConfig projectOptions(String formatPrefix) {
-            return new DelegatingConfiguration(allOptions, formatPrefix);
+        @SuppressWarnings({"unchecked"})
+        private ReadableConfig createFormatOptions(
+                String formatPrefix, FormatFactory formatFactory) {
+            Set<ConfigOption<?>> forwardableConfigOptions = formatFactory.forwardOptions();
+            Configuration formatConf = new DelegatingConfiguration(allOptions, formatPrefix);
+            if (forwardableConfigOptions.isEmpty()) {
+                return formatConf;
+            }
+
+            Configuration formatConfFromEnrichingOptions =
+                    new DelegatingConfiguration(enrichingOptions, formatPrefix);
+
+            for (ConfigOption<?> option : forwardableConfigOptions) {
+                formatConfFromEnrichingOptions
+                        .getOptional(option)
+                        .ifPresent(o -> formatConf.set((ConfigOption<? super Object>) option, o));
+            }
+
+            return formatConf;
+        }
+
+        /**
+         * This function assumes that the format config is used only and only if the original
+         * configuration contains the format config option. It will fail if there is a mismatch of
+         * the identifier between the format in the plan table map and the one in enriching table
+         * map.
+         */
+        private void checkFormatIdentifierMatchesWithEnrichingOptions(
+                ConfigOption<String> formatOption, String identifierFromPlan) {
+            Optional<String> identifierFromEnrichingOptions =
+                    enrichingOptions.getOptional(formatOption);
+
+            if (!identifierFromEnrichingOptions.isPresent()) {
+                return;
+            }
+
+            if (identifierFromPlan == null) {
+                throw new ValidationException(
+                        String.format(
+                                "The persisted plan has no format option '%s' specified, while the catalog table has it with value '%s'. "
+                                        + "This is invalid, as either only the persisted plan table defines the format, "
+                                        + "or both the persisted plan table and the catalog table defines the same format.",
+                                formatOption, identifierFromEnrichingOptions.get()));
+            }
+
+            if (!Objects.equals(identifierFromPlan, identifierFromEnrichingOptions.get())) {
+                throw new ValidationException(
+                        String.format(
+                                "Both persisted plan table and catalog table define the format option '%s', "
+                                        + "but they mismatch: '%s' != '%s'.",
+                                formatOption,
+                                identifierFromPlan,
+                                identifierFromEnrichingOptions.get()));
+            }
         }
     }
 
@@ -921,6 +1313,7 @@ public final class FactoryUtil {
 
         private final ObjectIdentifier objectIdentifier;
         private final ResolvedCatalogTable catalogTable;
+        private final Map<String, String> enrichmentOptions;
         private final ReadableConfig configuration;
         private final ClassLoader classLoader;
         private final boolean isTemporary;
@@ -928,11 +1321,13 @@ public final class FactoryUtil {
         public DefaultDynamicTableContext(
                 ObjectIdentifier objectIdentifier,
                 ResolvedCatalogTable catalogTable,
+                Map<String, String> enrichmentOptions,
                 ReadableConfig configuration,
                 ClassLoader classLoader,
                 boolean isTemporary) {
             this.objectIdentifier = objectIdentifier;
             this.catalogTable = catalogTable;
+            this.enrichmentOptions = enrichmentOptions;
             this.configuration = configuration;
             this.classLoader = classLoader;
             this.isTemporary = isTemporary;
@@ -946,6 +1341,11 @@ public final class FactoryUtil {
         @Override
         public ResolvedCatalogTable getCatalogTable() {
             return catalogTable;
+        }
+
+        @Override
+        public Map<String, String> getEnrichmentOptions() {
+            return enrichmentOptions;
         }
 
         @Override
@@ -1004,6 +1404,41 @@ public final class FactoryUtil {
         }
     }
 
+    /** Default implementation of {@link CatalogStoreFactory.Context}. */
+    @Internal
+    public static class DefaultCatalogStoreContext implements CatalogStoreFactory.Context {
+
+        private Map<String, String> options;
+
+        private ReadableConfig configuration;
+
+        private ClassLoader classLoader;
+
+        public DefaultCatalogStoreContext(
+                Map<String, String> options,
+                ReadableConfig configuration,
+                ClassLoader classLoader) {
+            this.options = options;
+            this.configuration = configuration;
+            this.classLoader = classLoader;
+        }
+
+        @Override
+        public Map<String, String> getOptions() {
+            return options;
+        }
+
+        @Override
+        public ReadableConfig getConfiguration() {
+            return configuration;
+        }
+
+        @Override
+        public ClassLoader getClassLoader() {
+            return classLoader;
+        }
+    }
+
     /** Default implementation of {@link ModuleFactory.Context}. */
     @Internal
     public static class DefaultModuleContext implements ModuleFactory.Context {
@@ -1040,5 +1475,52 @@ public final class FactoryUtil {
 
     private FactoryUtil() {
         // no instantiation
+    }
+
+    // --------------------------------------------------------------------------------------------
+
+    /**
+     * Validate watermark options from table options.
+     *
+     * @param factoryIdentifier identifier of table
+     * @param conf table options
+     */
+    public static void validateWatermarkOptions(String factoryIdentifier, ReadableConfig conf) {
+        Optional<String> errMsgOptional = checkWatermarkOptions(conf);
+        if (errMsgOptional.isPresent()) {
+            throw new ValidationException(
+                    String.format(
+                            "Error configuring watermark for '%s', %s",
+                            factoryIdentifier, errMsgOptional.get()));
+        }
+    }
+
+    /**
+     * Check watermark-related options and return error messages.
+     *
+     * @param conf table options
+     * @return Optional of error messages
+     */
+    public static Optional<String> checkWatermarkOptions(ReadableConfig conf) {
+        // try to validate watermark options by parsing it
+        watermarkOptionSet.forEach(option -> readOption(conf, option));
+
+        // check watermark alignment options
+        Optional<String> groupOptional = conf.getOptional(WATERMARK_ALIGNMENT_GROUP);
+        Optional<Duration> maxDriftOptional = conf.getOptional(WATERMARK_ALIGNMENT_MAX_DRIFT);
+        Optional<Duration> updateIntervalOptional =
+                conf.getOptional(WATERMARK_ALIGNMENT_UPDATE_INTERVAL);
+
+        if ((groupOptional.isPresent()
+                        || maxDriftOptional.isPresent()
+                        || updateIntervalOptional.isPresent())
+                && (!groupOptional.isPresent() || !maxDriftOptional.isPresent())) {
+            String errMsg =
+                    String.format(
+                            "'%s' and '%s' must be set when configuring watermark alignment",
+                            WATERMARK_ALIGNMENT_GROUP.key(), WATERMARK_ALIGNMENT_MAX_DRIFT.key());
+            return Optional.of(errMsg);
+        }
+        return Optional.empty();
     }
 }

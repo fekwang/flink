@@ -20,8 +20,10 @@ package org.apache.flink.table.planner.runtime.stream.sql;
 
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.state.ValueState;
 import org.apache.flink.api.common.state.ValueStateDescriptor;
+import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeinfo.Types;
 import org.apache.flink.api.java.tuple.Tuple2;
@@ -30,62 +32,103 @@ import org.apache.flink.api.java.typeutils.EnumTypeInfo;
 import org.apache.flink.api.java.typeutils.GenericTypeInfo;
 import org.apache.flink.api.java.typeutils.TupleTypeInfo;
 import org.apache.flink.configuration.Configuration;
+import org.apache.flink.configuration.PipelineOptions;
+import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.DataStreamSource;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.KeyedProcessFunction;
 import org.apache.flink.streaming.api.functions.ProcessFunction;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.table.api.DataTypes;
 import org.apache.flink.table.api.Schema;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.TableConfig;
 import org.apache.flink.table.api.TableDescriptor;
+import org.apache.flink.table.api.TableEnvironment;
 import org.apache.flink.table.api.TableResult;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.table.catalog.Column;
 import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.catalog.WatermarkSpec;
 import org.apache.flink.table.connector.ChangelogMode;
+import org.apache.flink.table.expressions.ResolvedExpression;
 import org.apache.flink.table.expressions.utils.ResolvedExpressionMock;
 import org.apache.flink.table.planner.factories.TestValuesTableFactory;
+import org.apache.flink.table.planner.utils.TableConfigUtils;
+import org.apache.flink.table.types.AtomicDataType;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.LocalZonedTimestampType;
 import org.apache.flink.table.types.logical.RawType;
-import org.apache.flink.test.util.AbstractTestBase;
+import org.apache.flink.table.types.logical.TimestampKind;
+import org.apache.flink.table.types.logical.TimestampType;
+import org.apache.flink.test.junit5.MiniClusterExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameter;
+import org.apache.flink.testutils.junit.extensions.parameterized.ParameterizedTestExtension;
+import org.apache.flink.testutils.junit.extensions.parameterized.Parameters;
+import org.apache.flink.testutils.junit.utils.TempDirUtils;
 import org.apache.flink.types.Either;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 import org.apache.flink.util.CloseableIterator;
 import org.apache.flink.util.CollectionUtil;
 import org.apache.flink.util.Collector;
+import org.apache.flink.util.UserClassLoaderJarTestUtils;
 
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.junit.runners.Parameterized.Parameter;
-import org.junit.runners.Parameterized.Parameters;
+import org.assertj.core.api.recursive.comparison.RecursiveComparisonConfiguration;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestTemplate;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.extension.RegisterExtension;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Path;
 import java.time.DayOfWeek;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 
+import static org.apache.flink.table.api.DataTypes.BIGINT;
+import static org.apache.flink.table.api.DataTypes.BOOLEAN;
+import static org.apache.flink.table.api.DataTypes.DOUBLE;
+import static org.apache.flink.table.api.DataTypes.FIELD;
+import static org.apache.flink.table.api.DataTypes.INT;
+import static org.apache.flink.table.api.DataTypes.MAP;
+import static org.apache.flink.table.api.DataTypes.ROW;
+import static org.apache.flink.table.api.DataTypes.STRING;
+import static org.apache.flink.table.api.DataTypes.STRUCTURED;
+import static org.apache.flink.table.api.DataTypes.TIMESTAMP;
+import static org.apache.flink.table.api.DataTypes.TIMESTAMP_LTZ;
 import static org.apache.flink.table.api.Expressions.$;
 import static org.apache.flink.table.api.Expressions.sourceWatermark;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.containsInAnyOrder;
-import static org.hamcrest.Matchers.instanceOf;
-import static org.junit.Assert.assertEquals;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_LOWER_UDF_CLASS;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_LOWER_UDF_CODE;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_UPPER_UDF_CLASS;
+import static org.apache.flink.table.utils.UserDefinedFunctions.GENERATED_UPPER_UDF_CODE;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /** Tests for connecting to the {@link DataStream} API. */
-@RunWith(Parameterized.class)
-public class DataStreamJavaITCase extends AbstractTestBase {
+@ExtendWith(ParameterizedTestExtension.class)
+class DataStreamJavaITCase {
+
+    @RegisterExtension
+    private static final MiniClusterExtension MINI_CLUSTER_EXTENSION =
+            new MiniClusterExtension(
+                    new MiniClusterResourceConfiguration.Builder()
+                            .setNumberTaskManagers(1)
+                            .setNumberSlotsPerTaskManager(4)
+                            .build());
 
     private StreamExecutionEnvironment env;
 
@@ -95,14 +138,41 @@ public class DataStreamJavaITCase extends AbstractTestBase {
     }
 
     @Parameters(name = "objectReuse = {0}")
-    public static ObjectReuse[] objectReuse() {
-        return ObjectReuse.values();
+    private static Collection<ObjectReuse> objectReuse() {
+        return Arrays.asList(ObjectReuse.values());
     }
 
-    @Parameter public ObjectReuse objectReuse;
+    @Parameter private ObjectReuse objectReuse;
 
-    @Before
-    public void before() {
+    private static String udfClassName1;
+    private static String jarPath1;
+    private static String udfClassName2;
+    private static String jarPath2;
+
+    @BeforeAll
+    static void beforeClass(@TempDir Path tempFolder) throws IOException {
+        udfClassName1 = GENERATED_LOWER_UDF_CLASS;
+        jarPath1 =
+                UserClassLoaderJarTestUtils.createJarFile(
+                                TempDirUtils.newFolder(tempFolder, "test-jar1"),
+                                "test-classloader-udf1.jar",
+                                udfClassName1,
+                                String.format(GENERATED_LOWER_UDF_CODE, udfClassName1))
+                        .toURI()
+                        .toString();
+        udfClassName2 = GENERATED_UPPER_UDF_CLASS;
+        jarPath2 =
+                UserClassLoaderJarTestUtils.createJarFile(
+                                TempDirUtils.newFolder(tempFolder, "test-jar2"),
+                                "test-classloader-udf2.jar",
+                                udfClassName2,
+                                String.format(GENERATED_UPPER_UDF_CODE, udfClassName2))
+                        .toURI()
+                        .toString();
+    }
+
+    @BeforeEach
+    void before() throws IOException {
         env = StreamExecutionEnvironment.getExecutionEnvironment();
         env.setRuntimeMode(RuntimeExecutionMode.STREAMING);
         env.setParallelism(4);
@@ -111,24 +181,27 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         } else if (objectReuse == ObjectReuse.DISABLED) {
             env.getConfig().disableObjectReuse();
         }
+        final Configuration defaultConfig = new Configuration();
+        defaultConfig.set(PipelineOptions.JARS, Collections.emptyList());
+        env.configure(defaultConfig);
     }
 
-    @Test
-    public void testFromDataStreamAtomic() {
+    @TestTemplate
+    void testFromDataStreamAtomic() {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
-        final DataStream<Integer> dataStream = env.fromElements(1, 2, 3, 4, 5);
+        final DataStream<Integer> dataStream = env.fromData(1, 2, 3, 4, 5);
 
         // wraps the atomic type
         final TableResult result = tableEnv.fromDataStream(dataStream).execute();
 
-        testSchema(result, Column.physical("f0", DataTypes.INT().notNull()));
+        testSchema(result, Column.physical("f0", INT().notNull()));
 
         testResult(result, Row.of(1), Row.of(2), Row.of(3), Row.of(4), Row.of(5));
     }
 
-    @Test
-    public void testToDataStreamAtomic() throws Exception {
+    @TestTemplate
+    void testToDataStreamAtomic() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final Table table = tableEnv.fromValues(1, 2, 3, 4, 5);
@@ -136,8 +209,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         testResult(tableEnv.toDataStream(table, Integer.class), 1, 2, 3, 4, 5);
     }
 
-    @Test
-    public void testFromDataStreamWithRow() {
+    @TestTemplate
+    void testFromDataStreamWithRow() {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final TypeInformation<Row> typeInfo =
@@ -153,25 +226,21 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                     Row.of(null, Row.of(false, null), Collections.singletonMap("world", null))
                 };
 
-        final DataStream<Row> dataStream = env.fromCollection(Arrays.asList(rows), typeInfo);
+        final DataStream<Row> dataStream = env.fromData(Arrays.asList(rows), typeInfo);
 
         final TableResult result = tableEnv.fromDataStream(dataStream).execute();
 
         testSchema(
                 result,
-                Column.physical("b", DataTypes.INT()),
-                Column.physical(
-                        "c",
-                        DataTypes.ROW(
-                                DataTypes.FIELD("f0", DataTypes.BOOLEAN()),
-                                DataTypes.FIELD("f1", DataTypes.STRING()))),
-                Column.physical("a", DataTypes.MAP(DataTypes.STRING(), DataTypes.DOUBLE())));
+                Column.physical("b", INT()),
+                Column.physical("c", ROW(FIELD("f0", BOOLEAN()), FIELD("f1", STRING()))),
+                Column.physical("a", MAP(STRING(), DOUBLE())));
 
         testResult(result, rows);
     }
 
-    @Test
-    public void testToDataStreamWithRow() throws Exception {
+    @TestTemplate
+    void testToDataStreamWithRow() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final Row[] rows =
@@ -185,8 +254,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         testResult(tableEnv.toDataStream(table), rows);
     }
 
-    @Test
-    public void testFromAndToDataStreamWithPojo() throws Exception {
+    @TestTemplate
+    void testFromAndToDataStreamWithPojo() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final ComplexPojo[] pojos = {
@@ -194,28 +263,26 @@ public class DataStreamJavaITCase extends AbstractTestBase {
             ComplexPojo.of(42, null, null)
         };
 
-        final DataStream<ComplexPojo> dataStream = env.fromElements(pojos);
+        final DataStream<ComplexPojo> dataStream = env.fromData(pojos);
 
         // reorders columns and enriches the immutable type
         final Table table =
                 tableEnv.fromDataStream(
                         dataStream,
                         Schema.newBuilder()
-                                .column("c", DataTypes.INT())
-                                .column("a", DataTypes.STRING())
+                                .column("c", INT())
+                                .column("a", STRING())
                                 .column("p", DataTypes.of(ImmutablePojo.class))
                                 .build());
 
         testSchema(
                 table,
-                Column.physical("c", DataTypes.INT()),
-                Column.physical("a", DataTypes.STRING()),
+                Column.physical("c", INT()),
+                Column.physical("a", STRING()),
                 Column.physical(
                         "p",
-                        DataTypes.STRUCTURED(
-                                ImmutablePojo.class,
-                                DataTypes.FIELD("d", DataTypes.DOUBLE()),
-                                DataTypes.FIELD("b", DataTypes.BOOLEAN()))));
+                        STRUCTURED(
+                                ImmutablePojo.class, FIELD("d", DOUBLE()), FIELD("b", BOOLEAN()))));
 
         tableEnv.createTemporaryView("t", table);
 
@@ -229,8 +296,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         testResult(tableEnv.toDataStream(table, ComplexPojo.class), pojos);
     }
 
-    @Test
-    public void testFromAndToDataStreamWithRaw() throws Exception {
+    @TestTemplate
+    void testFromAndToDataStreamWithRaw() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final List<Tuple2<DayOfWeek, ZoneOffset>> rawRecords =
@@ -238,20 +305,20 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                         Tuple2.of(DayOfWeek.MONDAY, ZoneOffset.UTC),
                         Tuple2.of(DayOfWeek.FRIDAY, ZoneOffset.ofHours(5)));
 
-        final DataStream<Tuple2<DayOfWeek, ZoneOffset>> dataStream = env.fromCollection(rawRecords);
+        final DataStream<Tuple2<DayOfWeek, ZoneOffset>> dataStream = env.fromData(rawRecords);
 
         // verify incoming type information
-        assertThat(dataStream.getType(), instanceOf(TupleTypeInfo.class));
+        assertThat(dataStream.getType()).isInstanceOf(TupleTypeInfo.class);
         final TupleTypeInfo<?> tupleInfo = (TupleTypeInfo<?>) dataStream.getType();
-        assertThat(tupleInfo.getFieldTypes()[0], instanceOf(EnumTypeInfo.class));
-        assertThat(tupleInfo.getFieldTypes()[1], instanceOf(GenericTypeInfo.class));
+        assertThat(tupleInfo.getFieldTypes()[0]).isInstanceOf(EnumTypeInfo.class);
+        assertThat(tupleInfo.getFieldTypes()[1]).isInstanceOf(GenericTypeInfo.class);
 
         final Table table = tableEnv.fromDataStream(dataStream);
 
         // verify schema conversion
         final List<DataType> columnDataTypes = table.getResolvedSchema().getColumnDataTypes();
-        assertThat(columnDataTypes.get(0).getLogicalType(), instanceOf(RawType.class));
-        assertThat(columnDataTypes.get(1).getLogicalType(), instanceOf(RawType.class));
+        assertThat(columnDataTypes.get(0).getLogicalType()).isInstanceOf(RawType.class);
+        assertThat(columnDataTypes.get(1).getLogicalType()).isInstanceOf(RawType.class);
 
         // test reverse operation
         testResult(
@@ -263,8 +330,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 rawRecords.toArray(new Tuple2[0]));
     }
 
-    @Test
-    public void testFromAndToDataStreamEventTime() throws Exception {
+    @TestTemplate
+    void testFromAndToDataStreamEventTime() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final DataStream<Tuple3<Long, Integer, String>> dataStream = getWatermarkedDataStream();
@@ -282,17 +349,21 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 table,
                 new ResolvedSchema(
                         Arrays.asList(
-                                Column.physical("f0", DataTypes.BIGINT().notNull()),
-                                Column.physical("f1", DataTypes.INT().notNull()),
-                                Column.physical("f2", DataTypes.STRING()),
+                                Column.physical("f0", BIGINT().notNull()),
+                                Column.physical("f1", INT().notNull()),
+                                Column.physical("f2", STRING()),
                                 Column.metadata(
-                                        "rowtime", DataTypes.TIMESTAMP_LTZ(3), null, false)),
+                                        "rowtime",
+                                        new AtomicDataType(
+                                                new LocalZonedTimestampType(
+                                                        true, TimestampKind.ROWTIME, 3)),
+                                        null,
+                                        false)),
                         Collections.singletonList(
                                 WatermarkSpec.of(
                                         "rowtime",
                                         ResolvedExpressionMock.of(
-                                                DataTypes.TIMESTAMP_LTZ(3),
-                                                "`SOURCE_WATERMARK`()"))),
+                                                TIMESTAMP_LTZ(3), "`SOURCE_WATERMARK`()"))),
                         null));
 
         tableEnv.createTemporaryView("t", table);
@@ -306,7 +377,7 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         testResult(
                 tableEnv.toDataStream(table)
                         .keyBy(k -> k.getField("f2"))
-                        .window(TumblingEventTimeWindows.of(Time.milliseconds(5)))
+                        .window(TumblingEventTimeWindows.of(Duration.ofMillis(5)))
                         .<Row>apply(
                                 (key, window, input, out) -> {
                                     int sum = 0;
@@ -321,8 +392,21 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 Row.of("c", 1000));
     }
 
-    @Test
-    public void testFromAndToChangelogStreamEventTime() throws Exception {
+    @TestTemplate
+    void testFromAndToDataStreamBypassConversion() throws Exception {
+        final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
+
+        DataStream<Row> dataStream = env.fromData(Row.of(1L, "a"));
+        Table table = tableEnv.fromDataStream(dataStream);
+        DataStream<Row> convertedDataStream = tableEnv.toDataStream(table);
+
+        assertThat(dataStream).isEqualTo(convertedDataStream);
+
+        testResult(convertedDataStream, Row.of(1L, "a"));
+    }
+
+    @TestTemplate
+    void testFromAndToChangelogStreamEventTime() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final DataStream<Tuple3<Long, Integer, String>> dataStream = getWatermarkedDataStream();
@@ -337,7 +421,7 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 tableEnv.fromChangelogStream(
                         changelogStream,
                         Schema.newBuilder()
-                                .columnByMetadata("rowtime", DataTypes.TIMESTAMP_LTZ(3))
+                                .columnByMetadata("rowtime", TIMESTAMP_LTZ(3))
                                 // uses Table API expressions
                                 .columnByExpression("computed", $("f1").upperCase())
                                 .watermark("rowtime", sourceWatermark())
@@ -352,17 +436,17 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 tableEnv.toChangelogStream(
                         reordered,
                         Schema.newBuilder()
-                                .column("f1", DataTypes.STRING())
-                                .columnByMetadata("rowtime", DataTypes.TIMESTAMP_LTZ(3))
+                                .column("f1", STRING())
+                                .columnByMetadata("rowtime", TIMESTAMP_LTZ(3))
                                 // uses Table API expressions
                                 .columnByExpression("ignored", $("f1").upperCase())
-                                .column("f0", DataTypes.INT())
+                                .column("f0", INT())
                                 .build());
 
         // test event time window and field access
         testResult(
                 result.keyBy(k -> k.getField("f1"))
-                        .window(TumblingEventTimeWindows.of(Time.milliseconds(5)))
+                        .window(TumblingEventTimeWindows.of(Duration.ofMillis(5)))
                         .<Row>apply(
                                 (key, window, input, out) -> {
                                     int sum = 0;
@@ -377,8 +461,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 Row.of("C", 1000));
     }
 
-    @Test
-    public void testFromAndToChangelogStreamRetract() throws Exception {
+    @TestTemplate
+    void testFromAndToChangelogStreamRetract() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final List<Either<Row, Row>> inputOrOutput =
@@ -415,7 +499,7 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                         output(RowKind.UPDATE_BEFORE, "alice", 1),
                         output(RowKind.UPDATE_AFTER, "alice", 101));
 
-        final DataStream<Row> changelogStream = env.fromElements(getInput(inputOrOutput));
+        final DataStream<Row> changelogStream = env.fromData(getInput(inputOrOutput));
         tableEnv.createTemporaryView("t", tableEnv.fromChangelogStream(changelogStream));
 
         final Table result = tableEnv.sqlQuery("SELECT f0, SUM(f1) FROM t GROUP BY f0");
@@ -425,8 +509,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         testResult(tableEnv.toChangelogStream(result), getOutput(inputOrOutput));
     }
 
-    @Test
-    public void testFromAndToChangelogStreamUpsert() throws Exception {
+    @TestTemplate
+    void testFromChangelogStreamUpsert() {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final List<Either<Row, Row>> inputOrOutput =
@@ -435,8 +519,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                         output(RowKind.INSERT, "bob", 0),
                         // --
                         input(RowKind.UPDATE_AFTER, "bob", 1),
-                        output(RowKind.DELETE, "bob", 0),
-                        output(RowKind.INSERT, "bob", 1),
+                        output(RowKind.UPDATE_BEFORE, "bob", 0),
+                        output(RowKind.UPDATE_AFTER, "bob", 1),
                         // --
                         input(RowKind.INSERT, "alice", 1),
                         output(RowKind.INSERT, "alice", 1),
@@ -444,14 +528,14 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                         input(RowKind.INSERT, "alice", 1), // no impact
                         // --
                         input(RowKind.UPDATE_AFTER, "alice", 2),
-                        output(RowKind.DELETE, "alice", 1),
-                        output(RowKind.INSERT, "alice", 2),
+                        output(RowKind.UPDATE_BEFORE, "alice", 1),
+                        output(RowKind.UPDATE_AFTER, "alice", 2),
                         // --
                         input(RowKind.UPDATE_AFTER, "alice", 100),
-                        output(RowKind.DELETE, "alice", 2),
-                        output(RowKind.INSERT, "alice", 100));
+                        output(RowKind.UPDATE_BEFORE, "alice", 2),
+                        output(RowKind.UPDATE_AFTER, "alice", 100));
 
-        final DataStream<Row> changelogStream = env.fromElements(getInput(inputOrOutput));
+        final DataStream<Row> changelogStream = env.fromData(getInput(inputOrOutput));
         tableEnv.createTemporaryView(
                 "t",
                 tableEnv.fromChangelogStream(
@@ -462,6 +546,40 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         final Table result = tableEnv.sqlQuery("SELECT f0, SUM(f1) FROM t GROUP BY f0");
 
         testResult(result.execute(), getOutput(inputOrOutput));
+    }
+
+    @TestTemplate
+    void testFromAndToChangelogStreamUpsert() throws Exception {
+        final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
+
+        final List<Either<Row, Row>> inputOrOutput =
+                Arrays.asList(
+                        input(RowKind.INSERT, "bob", 0),
+                        output(RowKind.INSERT, "bob", 0),
+                        // --
+                        input(RowKind.UPDATE_AFTER, "bob", 1),
+                        output(RowKind.UPDATE_AFTER, "bob", 1),
+                        // --
+                        input(RowKind.INSERT, "alice", 1),
+                        output(RowKind.INSERT, "alice", 1),
+                        // --
+                        input(RowKind.INSERT, "alice", 1), // no impact
+                        // --
+                        input(RowKind.UPDATE_AFTER, "alice", 2),
+                        output(RowKind.UPDATE_AFTER, "alice", 2),
+                        // --
+                        input(RowKind.UPDATE_AFTER, "alice", 100),
+                        output(RowKind.UPDATE_AFTER, "alice", 100));
+
+        final DataStream<Row> changelogStream = env.fromData(getInput(inputOrOutput));
+        tableEnv.createTemporaryView(
+                "t",
+                tableEnv.fromChangelogStream(
+                        changelogStream,
+                        Schema.newBuilder().primaryKey("f0").build(),
+                        ChangelogMode.upsert()));
+
+        final Table result = tableEnv.sqlQuery("SELECT f0, SUM(f1) FROM t GROUP BY f0");
 
         testResult(
                 tableEnv.toChangelogStream(
@@ -471,21 +589,21 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 getOutput(inputOrOutput));
     }
 
-    @Test
-    public void testToDataStreamCustomEventTime() throws Exception {
+    @TestTemplate
+    void testToDataStreamCustomEventTime() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
-        final TableConfig config = tableEnv.getConfig();
+        final TableConfig tableConfig = tableEnv.getConfig();
 
         // session time zone should not have an impact on the conversion
-        final ZoneId originalZone = config.getLocalTimeZone();
-        config.setLocalTimeZone(ZoneId.of("Europe/Berlin"));
+        final ZoneId originalZone = TableConfigUtils.getLocalTimeZone(tableConfig);
+        tableConfig.setLocalTimeZone(ZoneId.of("Europe/Berlin"));
 
         final LocalDateTime localDateTime1 = LocalDateTime.parse("1970-01-01T00:00:00.000");
         final LocalDateTime localDateTime2 = LocalDateTime.parse("1970-01-01T01:00:00.000");
 
         final DataStream<Tuple2<LocalDateTime, String>> dataStream =
-                env.fromElements(
+                env.fromData(
                         new Tuple2<>(localDateTime1, "alice"), new Tuple2<>(localDateTime2, "bob"));
 
         final Table table =
@@ -501,13 +619,16 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 table,
                 new ResolvedSchema(
                         Arrays.asList(
-                                Column.physical("f0", DataTypes.TIMESTAMP(3)),
-                                Column.physical("f1", DataTypes.STRING())),
+                                Column.physical(
+                                        "f0",
+                                        new AtomicDataType(
+                                                new TimestampType(true, TimestampKind.ROWTIME, 3))),
+                                Column.physical("f1", STRING())),
                         Collections.singletonList(
                                 WatermarkSpec.of(
                                         "f0",
                                         ResolvedExpressionMock.of(
-                                                DataTypes.TIMESTAMP(3), "`SOURCE_WATERMARK`()"))),
+                                                TIMESTAMP(3), "`SOURCE_WATERMARK`()"))),
                         null));
 
         final DataStream<Long> rowtimeStream =
@@ -526,11 +647,11 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 localDateTime1.atOffset(ZoneOffset.UTC).toInstant().toEpochMilli(),
                 localDateTime2.atOffset(ZoneOffset.UTC).toInstant().toEpochMilli());
 
-        config.setLocalTimeZone(originalZone);
+        tableConfig.setLocalTimeZone(originalZone);
     }
 
-    @Test
-    public void testComplexUnifiedPipelineBatch() throws Exception {
+    @TestTemplate
+    void testComplexUnifiedPipelineBatch() {
         env.setRuntimeMode(RuntimeExecutionMode.BATCH);
 
         final Table resultTable = getComplexUnifiedPipeline(env);
@@ -538,8 +659,41 @@ public class DataStreamJavaITCase extends AbstractTestBase {
         testResult(resultTable.execute(), Row.of("Bob", 1L), Row.of("Alice", 1L));
     }
 
-    @Test
-    public void testComplexUnifiedPipelineStreaming() throws Exception {
+    @TestTemplate
+    void testTableStreamConversionBatch() throws Exception {
+        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
+
+        DataStreamSource<Row> streamSource =
+                env.fromData(
+                        Row.of("Alice"),
+                        Row.of("alice"),
+                        Row.of("lily"),
+                        Row.of("Bob"),
+                        Row.of("lily"),
+                        Row.of("lily"));
+        StreamTableEnvironment tableEnvironment = StreamTableEnvironment.create(env);
+        Table sourceTable = tableEnvironment.fromDataStream(streamSource).as("word");
+        tableEnvironment.createTemporaryView("tmp_table", sourceTable);
+        Table resultTable = tableEnvironment.sqlQuery("select UPPER(word) as word from tmp_table");
+        SingleOutputStreamOperator<Tuple2<String, Integer>> resultStream =
+                tableEnvironment
+                        .toDataStream(resultTable)
+                        .map(row -> (String) row.getField("word"))
+                        .returns(TypeInformation.of(String.class))
+                        .map(s -> new Tuple2<>(s, 1))
+                        .returns(TypeInformation.of(new TypeHint<Tuple2<String, Integer>>() {}))
+                        .keyBy(tuple -> tuple.f0)
+                        .sum(1);
+
+        testResult(
+                resultStream,
+                new Tuple2<>("ALICE", 2),
+                new Tuple2<>("BOB", 1),
+                new Tuple2<>("LILY", 3));
+    }
+
+    @TestTemplate
+    void testComplexUnifiedPipelineStreaming() {
         final Table resultTable = getComplexUnifiedPipeline(env);
 
         // more rows than in batch mode due to incremental computations
@@ -551,8 +705,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 Row.of("Alice", 1L));
     }
 
-    @Test
-    public void testAttachAsDataStream() throws Exception {
+    @TestTemplate
+    void testAttachAsDataStream() throws Exception {
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
         final String input1DataId =
@@ -564,8 +718,8 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                         .option("data-id", input1DataId)
                         .schema(
                                 Schema.newBuilder()
-                                        .column("i", DataTypes.INT())
-                                        .column("s", DataTypes.STRING())
+                                        .column("i", INT())
+                                        .column("s", STRING())
                                         .build())
                         .build());
 
@@ -574,17 +728,17 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 TableDescriptor.forConnector("values")
                         .schema(
                                 Schema.newBuilder()
-                                        .column("i", DataTypes.INT())
-                                        .column("s", DataTypes.STRING())
+                                        .column("i", INT())
+                                        .column("s", STRING())
                                         .build())
                         .build());
 
-        tableEnv.createTemporaryView("InputTable2", env.fromElements(1, 2, 3));
+        tableEnv.createTemporaryView("InputTable2", env.fromData(1, 2, 3));
 
         tableEnv.createTemporaryTable(
                 "OutputTable2",
                 TableDescriptor.forConnector("values")
-                        .schema(Schema.newBuilder().column("i", DataTypes.INT()).build())
+                        .schema(Schema.newBuilder().column("i", INT()).build())
                         .build());
 
         tableEnv.createStatementSet()
@@ -593,24 +747,150 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 .attachAsDataStream();
 
         // submits all source-to-sink pipelines
-        testResult(env.fromElements(3, 4, 5), 3, 4, 5);
+        testResult(env.fromData(3, 4, 5), 3, 4, 5);
 
-        assertThat(
-                TestValuesTableFactory.getResults("OutputTable1"),
-                containsInAnyOrder("+I[1, a]", "+I[2, b]"));
+        assertThat(TestValuesTableFactory.getResultsAsStrings("OutputTable1"))
+                .containsExactlyInAnyOrder("+I[1, a]", "+I[2, b]");
 
-        assertThat(
-                TestValuesTableFactory.getResults("OutputTable2"),
-                containsInAnyOrder("+I[1]", "+I[2]", "+I[3]"));
+        assertThat(TestValuesTableFactory.getResultsAsStrings("OutputTable2"))
+                .containsExactlyInAnyOrder("+I[1]", "+I[2]", "+I[3]");
+    }
+
+    @TestTemplate
+    void testMultiChangelogStreamUpsert() throws Exception {
+        final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
+
+        createTableFromElements(
+                tableEnv,
+                "T1",
+                ChangelogMode.insertOnly(),
+                Schema.newBuilder()
+                        .column("pk", "INT NOT NULL")
+                        .column("x", "STRING NOT NULL")
+                        .primaryKey("pk")
+                        .build(),
+                Arrays.asList(Types.INT, Types.STRING),
+                Row.ofKind(RowKind.INSERT, 1, "1"),
+                Row.ofKind(RowKind.INSERT, 2, "2"));
+
+        createTableFromElements(
+                tableEnv,
+                "T2",
+                ChangelogMode.upsert(),
+                Schema.newBuilder()
+                        .column("pk", "INT NOT NULL")
+                        .column("y", "STRING NOT NULL")
+                        .column("some_value", "DOUBLE NOT NULL")
+                        .primaryKey("pk")
+                        .build(),
+                Arrays.asList(Types.INT, Types.STRING, Types.DOUBLE),
+                Row.ofKind(RowKind.INSERT, 1, "A", 1.0),
+                Row.ofKind(RowKind.INSERT, 2, "B", 2.0),
+                Row.ofKind(RowKind.UPDATE_AFTER, 1, "A", 1.1),
+                Row.ofKind(RowKind.UPDATE_AFTER, 2, "B", 2.1));
+
+        createTableFromElements(
+                tableEnv,
+                "T3",
+                ChangelogMode.insertOnly(),
+                Schema.newBuilder()
+                        .column("pk1", "STRING NOT NULL")
+                        .column("pk2", "STRING NOT NULL")
+                        .column("some_other_value", "DOUBLE NOT NULL")
+                        .primaryKey("pk1", "pk2")
+                        .build(),
+                Arrays.asList(Types.STRING, Types.STRING, Types.DOUBLE),
+                Row.ofKind(RowKind.INSERT, "1", "A", 10.0),
+                Row.ofKind(RowKind.INSERT, "1", "B", 11.0));
+
+        final Table resultTable =
+                tableEnv.sqlQuery(
+                        "SELECT\n"
+                                + "T1.pk,\n"
+                                + "T2.some_value * T3.some_other_value,\n"
+                                + "T3.pk1,\n"
+                                + "T3.pk2\n"
+                                + "FROM T1\n"
+                                + "LEFT JOIN T2 on T1.pk = T2.pk\n"
+                                + "LEFT JOIN T3 ON T1.x = T3.pk1 AND T2.y = T3.pk2");
+
+        final DataStream<Row> resultStream =
+                tableEnv.toChangelogStream(
+                        resultTable,
+                        Schema.newBuilder()
+                                .column("pk", "INT NOT NULL")
+                                .column("some_calculated_value", "DOUBLE")
+                                .column("pk1", "STRING")
+                                .column("pk2", "STRING")
+                                .primaryKey("pk")
+                                .build(),
+                        ChangelogMode.upsert());
+
+        testMaterializedResult(
+                resultStream, 0, Row.of(2, null, null, null), Row.of(1, 11.0, "1", "A"));
+    }
+
+    @TestTemplate
+    void testResourcePropagation() throws Exception {
+        final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
+        assertStreamJarsOf(0);
+        assertTableJarsOf(tableEnv, 0);
+
+        tableEnv.executeSql(
+                String.format(
+                        "CREATE TEMPORARY SYSTEM FUNCTION myLower AS '%s' USING JAR '%s'",
+                        udfClassName1, jarPath1));
+        assertStreamJarsOf(0);
+        assertTableJarsOf(tableEnv, 0);
+
+        // This is not recommended, usually this option should be set before
+        // but just for testing proper merging.
+        final Configuration customConfig = new Configuration();
+        customConfig.set(PipelineOptions.JARS, Collections.singletonList(jarPath2));
+        env.configure(customConfig);
+        assertStreamJarsOf(1);
+        assertTableJarsOf(tableEnv, 1);
+
+        final DataStream<String> resultStream =
+                tableEnv.toDataStream(
+                        tableEnv.sqlQuery(
+                                "SELECT myLower(s) FROM (VALUES ('Bob'), ('Alice')) AS T(s)"),
+                        String.class);
+        assertStreamJarsOf(2);
+        assertTableJarsOf(tableEnv, 2);
+
+        testResult(resultStream, "bob", "alice");
+
+        tableEnv.executeSql(
+                String.format(
+                        "CREATE TEMPORARY SYSTEM FUNCTION myUpper AS '%s' USING JAR '%s'",
+                        udfClassName2, jarPath2));
+        assertStreamJarsOf(2);
+        assertTableJarsOf(tableEnv, 2);
+
+        final TableResult tableResult =
+                tableEnv.executeSql("SELECT myUpper(s) FROM (VALUES ('Bob'), ('Alice')) AS T(s)");
+        assertStreamJarsOf(2);
+        assertTableJarsOf(tableEnv, 2);
+
+        testResult(tableResult, Row.of("BOB"), Row.of("ALICE"));
     }
 
     // --------------------------------------------------------------------------------------------
     // Helper methods
     // --------------------------------------------------------------------------------------------
 
+    private static void assertTableJarsOf(TableEnvironment tableEnv, int size) {
+        assertThat(tableEnv.getConfig().get(PipelineOptions.JARS)).hasSize(size);
+    }
+
+    private void assertStreamJarsOf(int size) {
+        assertThat(env.getConfiguration().get(PipelineOptions.JARS)).hasSize(size);
+    }
+
     private Table getComplexUnifiedPipeline(StreamExecutionEnvironment env) {
 
-        final DataStream<String> allowedNamesStream = env.fromElements("Bob", "Alice");
+        final DataStream<String> allowedNamesStream = env.fromData("Bob", "Alice");
 
         final StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env);
 
@@ -635,7 +915,7 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                                     ValueState<Long> count;
 
                                     @Override
-                                    public void open(Configuration parameters) {
+                                    public void open(OpenContext openContext) {
                                         count =
                                                 getRuntimeContext()
                                                         .getState(
@@ -665,7 +945,7 @@ public class DataStreamJavaITCase extends AbstractTestBase {
 
     private DataStream<Tuple3<Long, Integer, String>> getWatermarkedDataStream() {
         final DataStream<Tuple3<Long, Integer, String>> dataStream =
-                env.fromCollection(
+                env.fromData(
                         Arrays.asList(
                                 Tuple3.of(1L, 42, "a"),
                                 Tuple3.of(2L, 5, "a"),
@@ -697,21 +977,47 @@ public class DataStreamJavaITCase extends AbstractTestBase {
                 .toArray(Row[]::new);
     }
 
+    private void createTableFromElements(
+            StreamTableEnvironment tableEnv,
+            String name,
+            ChangelogMode changelogMode,
+            Schema schema,
+            List<TypeInformation<?>> fieldTypeInfo,
+            Row... elements) {
+        final String[] fieldNames =
+                schema.getColumns().stream()
+                        .map(Schema.UnresolvedColumn::getName)
+                        .toArray(String[]::new);
+        final TypeInformation<?>[] fieldTypes = fieldTypeInfo.toArray(new TypeInformation[0]);
+        final DataStream<Row> dataStream =
+                env.fromData(elements).returns(Types.ROW_NAMED(fieldNames, fieldTypes));
+        final Table table = tableEnv.fromChangelogStream(dataStream, schema, changelogMode);
+        tableEnv.createTemporaryView(name, table);
+    }
+
     private static void testSchema(Table table, Column... expectedColumns) {
-        assertEquals(ResolvedSchema.of(expectedColumns), table.getResolvedSchema());
+        assertThat(table.getResolvedSchema()).isEqualTo(ResolvedSchema.of(expectedColumns));
     }
 
     private static void testSchema(Table table, ResolvedSchema expectedSchema) {
-        assertEquals(expectedSchema, table.getResolvedSchema());
+        assertThat(expectedSchema)
+                .usingRecursiveComparison(
+                        RecursiveComparisonConfiguration.builder()
+                                .withComparatorForType(
+                                        Comparator.comparing(
+                                                ResolvedExpression::asSerializableString),
+                                        ResolvedExpression.class)
+                                .build())
+                .isEqualTo(table.getResolvedSchema());
     }
 
     private static void testSchema(TableResult result, Column... expectedColumns) {
-        assertEquals(ResolvedSchema.of(expectedColumns), result.getResolvedSchema());
+        assertThat(result.getResolvedSchema()).isEqualTo(ResolvedSchema.of(expectedColumns));
     }
 
     private static void testResult(TableResult result, Row... expectedRows) {
         final List<Row> actualRows = CollectionUtil.iteratorToList(result.collect());
-        assertThat(actualRows, containsInAnyOrder(expectedRows));
+        assertThat(actualRows).containsExactlyInAnyOrder(expectedRows);
     }
 
     @SafeVarargs
@@ -719,7 +1025,35 @@ public class DataStreamJavaITCase extends AbstractTestBase {
             throws Exception {
         try (CloseableIterator<T> iterator = dataStream.executeAndCollect()) {
             final List<T> list = CollectionUtil.iteratorToList(iterator);
-            assertThat(list, containsInAnyOrder(expectedResult));
+            assertThat(list).containsExactlyInAnyOrder(expectedResult);
+        }
+    }
+
+    private static void testMaterializedResult(
+            DataStream<Row> dataStream, int primaryKeyPos, Row... expectedResult) throws Exception {
+        try (CloseableIterator<Row> iterator = dataStream.executeAndCollect()) {
+            final List<Row> materializedResult = new ArrayList<>();
+            iterator.forEachRemaining(
+                    row -> {
+                        final RowKind kind = row.getKind();
+                        row.setKind(RowKind.INSERT);
+                        switch (kind) {
+                            case UPDATE_AFTER:
+                                final Object primaryKeyValue = row.getField(primaryKeyPos);
+                                assertThat(primaryKeyValue).isNotNull();
+                                materializedResult.removeIf(
+                                        r -> primaryKeyValue.equals(r.getField(primaryKeyPos)));
+                                // fall through
+                            case INSERT:
+                                materializedResult.add(row);
+                                break;
+                            case UPDATE_BEFORE:
+                            case DELETE:
+                                materializedResult.remove(row);
+                                break;
+                        }
+                    });
+            assertThat(materializedResult).containsExactlyInAnyOrder(expectedResult);
         }
     }
 

@@ -19,14 +19,16 @@
 package org.apache.flink.runtime.dispatcher;
 
 import org.apache.flink.api.common.JobID;
-import org.apache.flink.api.common.time.Time;
+import org.apache.flink.core.execution.CheckpointType;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.runtime.clusterframework.ApplicationStatus;
-import org.apache.flink.runtime.jobgraph.JobGraph;
 import org.apache.flink.runtime.messages.Acknowledge;
 import org.apache.flink.runtime.rpc.FencedRpcGateway;
 import org.apache.flink.runtime.rpc.RpcTimeout;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
+import org.apache.flink.streaming.api.graph.ExecutionPlan;
 
+import java.time.Duration;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 
@@ -36,11 +38,15 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
     /**
      * Submit a job to the dispatcher.
      *
-     * @param jobGraph JobGraph to submit
+     * @param executionPlan ExecutionPlan to submit
      * @param timeout RPC timeout
      * @return A future acknowledge if the submission succeeded
      */
-    CompletableFuture<Acknowledge> submitJob(JobGraph jobGraph, @RpcTimeout Time timeout);
+    CompletableFuture<Acknowledge> submitJob(
+            ExecutionPlan executionPlan, @RpcTimeout Duration timeout);
+
+    CompletableFuture<Acknowledge> submitFailedJob(
+            JobID jobId, String jobName, Throwable exception);
 
     /**
      * List the current set of submitted jobs.
@@ -48,7 +54,7 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
      * @param timeout RPC timeout
      * @return A future collection of currently submitted jobs
      */
-    CompletableFuture<Collection<JobID>> listJobs(@RpcTimeout Time timeout);
+    CompletableFuture<Collection<JobID>> listJobs(@RpcTimeout Duration timeout);
 
     /**
      * Returns the port of the blob server.
@@ -56,9 +62,66 @@ public interface DispatcherGateway extends FencedRpcGateway<DispatcherId>, Restf
      * @param timeout of the operation
      * @return A future integer of the blob server port
      */
-    CompletableFuture<Integer> getBlobServerPort(@RpcTimeout Time timeout);
+    CompletableFuture<Integer> getBlobServerPort(@RpcTimeout Duration timeout);
 
     default CompletableFuture<Acknowledge> shutDownCluster(ApplicationStatus applicationStatus) {
         return shutDownCluster();
+    }
+
+    default CompletableFuture<String> triggerCheckpoint(JobID jobID, @RpcTimeout Duration timeout) {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Triggers a savepoint with the given savepoint directory as a target, returning a future that
+     * completes with the savepoint location when it is complete.
+     *
+     * @param jobId the job id
+     * @param targetDirectory Target directory for the savepoint.
+     * @param formatType Binary format of the savepoint.
+     * @param savepointMode context of the savepoint operation
+     * @param timeout Timeout for the asynchronous operation
+     * @return Future which is completed once the operation is triggered successfully
+     */
+    default CompletableFuture<String> triggerSavepointAndGetLocation(
+            JobID jobId,
+            String targetDirectory,
+            SavepointFormatType formatType,
+            TriggerSavepointMode savepointMode,
+            @RpcTimeout Duration timeout) {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Stops the job with a savepoint, returning a future that completes with the savepoint location
+     * when the savepoint is completed.
+     *
+     * @param jobId the job id
+     * @param targetDirectory Target directory for the savepoint.
+     * @param savepointMode context of the savepoint operation
+     * @param timeout for the rpc call
+     * @return Future which is completed with the savepoint location once it is completed
+     */
+    default CompletableFuture<String> stopWithSavepointAndGetLocation(
+            JobID jobId,
+            String targetDirectory,
+            SavepointFormatType formatType,
+            TriggerSavepointMode savepointMode,
+            @RpcTimeout final Duration timeout) {
+        throw new UnsupportedOperationException();
+    }
+
+    /**
+     * Triggers a checkpoint, returning a future that completes with the checkpoint id when it is
+     * complete.
+     *
+     * @param jobId the job id
+     * @param checkpointType checkpoint type of this checkpoint (configured / full / incremental)
+     * @param timeout Timeout for the asynchronous operation
+     * @return Future which is completed once the operation is triggered successfully
+     */
+    default CompletableFuture<Long> triggerCheckpointAndGetCheckpointID(
+            final JobID jobId, final CheckpointType checkpointType, final Duration timeout) {
+        throw new UnsupportedOperationException();
     }
 }

@@ -20,38 +20,31 @@ package org.apache.flink.state.changelog;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.functions.FlatMapFunction;
-import org.apache.flink.api.common.typeutils.TypeSerializer;
-import org.apache.flink.configuration.CheckpointingOptions;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.IllegalConfigurationException;
 import org.apache.flink.configuration.ReadableConfig;
 import org.apache.flink.configuration.StateBackendOptions;
+import org.apache.flink.configuration.StateChangelogOptions;
 import org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend;
-import org.apache.flink.core.fs.CloseableRegistry;
-import org.apache.flink.metrics.MetricGroup;
-import org.apache.flink.runtime.execution.Environment;
-import org.apache.flink.runtime.query.TaskKvStateRegistry;
+import org.apache.flink.runtime.jobgraph.tasks.JobCheckpointingSettings;
 import org.apache.flink.runtime.state.AbstractKeyedStateBackend;
 import org.apache.flink.runtime.state.AbstractStateBackend;
+import org.apache.flink.runtime.state.ChangelogTestUtils;
 import org.apache.flink.runtime.state.CheckpointStorage;
 import org.apache.flink.runtime.state.CheckpointStorageAccess;
 import org.apache.flink.runtime.state.CheckpointStorageLoader;
 import org.apache.flink.runtime.state.CompletedCheckpointStorageLocation;
 import org.apache.flink.runtime.state.ConfigurableStateBackend;
-import org.apache.flink.runtime.state.KeyGroupRange;
-import org.apache.flink.runtime.state.KeyedStateHandle;
 import org.apache.flink.runtime.state.OperatorStateBackend;
-import org.apache.flink.runtime.state.OperatorStateHandle;
 import org.apache.flink.runtime.state.StateBackend;
 import org.apache.flink.runtime.state.StateBackendLoader;
 import org.apache.flink.runtime.state.delegate.DelegatingStateBackend;
 import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
-import org.apache.flink.runtime.state.memory.MemoryStateBackend;
 import org.apache.flink.runtime.state.storage.JobManagerCheckpointStorage;
-import org.apache.flink.runtime.state.ttl.TtlTimeProvider;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction;
+import org.apache.flink.streaming.api.graph.StreamGraph;
 import org.apache.flink.util.Collector;
 import org.apache.flink.util.TernaryBoolean;
 
@@ -59,10 +52,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
-import javax.annotation.Nonnull;
+import java.util.Collections;
 
-import java.util.Collection;
-
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
@@ -78,9 +70,9 @@ public class ChangelogStateBackendLoadingTest {
     public void testLoadingDefault() throws Exception {
         final StateBackend backend =
                 StateBackendLoader.fromApplicationOrConfigOrDefault(
-                        null, TernaryBoolean.UNDEFINED, config(), cl, null);
+                        null, config(), config(), cl, null);
         final CheckpointStorage storage =
-                CheckpointStorageLoader.load(null, null, backend, config(), cl, null);
+                CheckpointStorageLoader.load(null, backend, config(), config(), cl, null);
 
         assertTrue(backend instanceof HashMapStateBackend);
     }
@@ -91,9 +83,9 @@ public class ChangelogStateBackendLoadingTest {
         // "rocksdb" should not take effect
         final StateBackend backend =
                 StateBackendLoader.fromApplicationOrConfigOrDefault(
-                        appBackend, TernaryBoolean.UNDEFINED, config("rocksdb", true), cl, null);
+                        appBackend, config("rocksdb", true), config(), cl, null);
         final CheckpointStorage storage =
-                CheckpointStorageLoader.load(null, null, backend, config(), cl, null);
+                CheckpointStorageLoader.load(null, backend, config(), config(), cl, null);
 
         assertDelegateStateBackend(
                 backend, MockStateBackend.class, storage, MockStateBackend.class);
@@ -108,9 +100,9 @@ public class ChangelogStateBackendLoadingTest {
         // "rocksdb" should not take effect
         final StateBackend backend =
                 StateBackendLoader.fromApplicationOrConfigOrDefault(
-                        appBackend, TernaryBoolean.TRUE, config("rocksdb", false), cl, null);
+                        appBackend, config("rocksdb", true), config(false), cl, null);
         final CheckpointStorage storage =
-                CheckpointStorageLoader.load(null, null, backend, config(), cl, null);
+                CheckpointStorageLoader.load(null, backend, config(), config(), cl, null);
 
         assertDelegateStateBackend(
                 backend, MockStateBackend.class, storage, MockStateBackend.class);
@@ -123,9 +115,9 @@ public class ChangelogStateBackendLoadingTest {
     public void testApplicationEnableChangelogStateBackend() throws Exception {
         final StateBackend backend =
                 StateBackendLoader.fromApplicationOrConfigOrDefault(
-                        null, TernaryBoolean.TRUE, config(false), cl, null);
+                        null, config(true), config(false), cl, null);
         final CheckpointStorage storage =
-                CheckpointStorageLoader.load(null, null, backend, config(), cl, null);
+                CheckpointStorageLoader.load(null, backend, config(), config(), cl, null);
 
         assertDelegateStateBackend(
                 backend, HashMapStateBackend.class, storage, JobManagerCheckpointStorage.class);
@@ -135,9 +127,21 @@ public class ChangelogStateBackendLoadingTest {
     public void testApplicationDisableChangelogStateBackend() throws Exception {
         final StateBackend backend =
                 StateBackendLoader.fromApplicationOrConfigOrDefault(
-                        null, TernaryBoolean.FALSE, config(true), cl, null);
+                        null, config(false), config(true), cl, null);
 
         assertTrue(backend instanceof HashMapStateBackend);
+    }
+
+    @Test
+    public void testLoadingChangelogForRecovery() throws Exception {
+        final StateBackend backend =
+                StateBackendLoader.loadStateBackendFromKeyedStateHandles(
+                        new MockStateBackend(),
+                        cl,
+                        Collections.singletonList(
+                                ChangelogTestUtils.createChangelogStateBackendHandle()));
+
+        assertTrue(backend instanceof DeactivatedChangelogStateBackend);
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -146,38 +150,7 @@ public class ChangelogStateBackendLoadingTest {
                 new ChangelogStateBackend(new ChangelogStateBackend(new MockStateBackend()));
 
         StateBackendLoader.fromApplicationOrConfigOrDefault(
-                appBackend, TernaryBoolean.UNDEFINED, config("rocksdb", true), cl, null);
-    }
-
-    // ----------------------------------------------------------
-    // The following tests are testing different combinations of
-    // state backend and checkpointStorage after FLINK-19463
-    // disentangles Checkpointing from state backends.
-    // After "jobmanager" and "filesystem" state backends are removed,
-    // These tests can be simplified.
-    //
-    @Test
-    public void testLoadingMemoryStateBackendFromConfig() throws Exception {
-        testLoadingStateBackend(
-                "jobmanager", MemoryStateBackend.class, MemoryStateBackend.class, true);
-    }
-
-    @Test
-    public void testLoadingMemoryStateBackend() throws Exception {
-        testLoadingStateBackend(
-                "jobmanager", MemoryStateBackend.class, MemoryStateBackend.class, false);
-    }
-
-    @Test
-    public void testLoadingFsStateBackendFromConfig() throws Exception {
-        testLoadingStateBackend(
-                "filesystem", HashMapStateBackend.class, JobManagerCheckpointStorage.class, true);
-    }
-
-    @Test
-    public void testLoadingFsStateBackend() throws Exception {
-        testLoadingStateBackend(
-                "filesystem", HashMapStateBackend.class, JobManagerCheckpointStorage.class, false);
+                appBackend, config("rocksdb", true), config(), cl, null);
     }
 
     @Test
@@ -210,10 +183,20 @@ public class ChangelogStateBackendLoadingTest {
                 false);
     }
 
+    @Test
+    public void testEnableChangelogStateBackendInStreamExecutionEnvironment() throws Exception {
+        StreamExecutionEnvironment env = getEnvironment();
+        assertStateBackendAndChangelogInStreamGraphAndJobGraph(env, TernaryBoolean.UNDEFINED);
+
+        env.enableChangelogStateBackend(true);
+        assertStateBackendAndChangelogInStreamGraphAndJobGraph(env, TernaryBoolean.TRUE);
+        env.enableChangelogStateBackend(false);
+        assertStateBackendAndChangelogInStreamGraphAndJobGraph(env, TernaryBoolean.FALSE);
+    }
+
     private Configuration config(String stateBackend, boolean enableChangelogStateBackend) {
         final Configuration config = new Configuration();
-        config.setBoolean(
-                CheckpointingOptions.ENABLE_STATE_CHANGE_LOG, enableChangelogStateBackend);
+        config.set(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG, enableChangelogStateBackend);
         config.setString(backendKey, stateBackend);
 
         return config;
@@ -221,8 +204,7 @@ public class ChangelogStateBackendLoadingTest {
 
     private Configuration config(boolean enableChangelogStateBackend) {
         final Configuration config = new Configuration();
-        config.setBoolean(
-                CheckpointingOptions.ENABLE_STATE_CHANGE_LOG, enableChangelogStateBackend);
+        config.set(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG, enableChangelogStateBackend);
 
         return config;
     }
@@ -265,15 +247,15 @@ public class ChangelogStateBackendLoadingTest {
         if (configOnly) {
             backend =
                     StateBackendLoader.fromApplicationOrConfigOrDefault(
-                            null, TernaryBoolean.UNDEFINED, config, cl, null);
+                            null, config, config(), cl, null);
         } else {
             backend =
                     StateBackendLoader.fromApplicationOrConfigOrDefault(
-                            appBackend, TernaryBoolean.TRUE, config, cl, null);
+                            appBackend, config, config(), cl, null);
         }
 
         final CheckpointStorage storage =
-                CheckpointStorageLoader.load(null, null, backend, config, cl, null);
+                CheckpointStorageLoader.load(null, backend, config, config(), cl, null);
 
         assertDelegateStateBackend(backend, delegatedStateBackendClass, storage, storageClass);
     }
@@ -306,12 +288,22 @@ public class ChangelogStateBackendLoadingTest {
         return env;
     }
 
-    private StateBackend unwrapFromDelegatingStateBackend(StateBackend backend) {
-        if (backend instanceof DelegatingStateBackend) {
-            return ((DelegatingStateBackend) backend).getDelegatedStateBackend();
-        } else {
-            return backend;
-        }
+    private void assertStateBackendAndChangelogInStreamGraphAndJobGraph(
+            StreamExecutionEnvironment env, TernaryBoolean isChangelogEnabled) throws Exception {
+        assertEquals(isChangelogEnabled, env.isChangelogStateBackendEnabled());
+
+        StreamGraph streamGraph = env.getStreamGraph(false);
+        assertEquals(
+                isChangelogEnabled,
+                streamGraph
+                        .getJobConfiguration()
+                        .getOptional(StateChangelogOptions.ENABLE_STATE_CHANGE_LOG)
+                        .map(TernaryBoolean::fromBoolean)
+                        .orElse(TernaryBoolean.UNDEFINED));
+
+        JobCheckpointingSettings checkpointingSettings =
+                streamGraph.getJobGraph().getCheckpointingSettings();
+        assertEquals(isChangelogEnabled, checkpointingSettings.isChangelogStateBackendEnabled());
     }
 
     private static class MockStateBackend extends AbstractStateBackend
@@ -320,26 +312,13 @@ public class ChangelogStateBackendLoadingTest {
 
         @Override
         public <K> AbstractKeyedStateBackend<K> createKeyedStateBackend(
-                Environment env,
-                JobID jobID,
-                String operatorIdentifier,
-                TypeSerializer<K> keySerializer,
-                int numberOfKeyGroups,
-                KeyGroupRange keyGroupRange,
-                TaskKvStateRegistry kvStateRegistry,
-                TtlTimeProvider ttlTimeProvider,
-                MetricGroup metricGroup,
-                @Nonnull Collection<KeyedStateHandle> stateHandles,
-                CloseableRegistry cancelStreamRegistry) {
+                KeyedStateBackendParameters<K> parameters) {
             return null;
         }
 
         @Override
         public OperatorStateBackend createOperatorStateBackend(
-                Environment env,
-                String operatorIdentifier,
-                @Nonnull Collection<OperatorStateHandle> stateHandles,
-                CloseableRegistry cancelStreamRegistry) {
+                OperatorStateBackendParameters parameters) {
             return null;
         }
 

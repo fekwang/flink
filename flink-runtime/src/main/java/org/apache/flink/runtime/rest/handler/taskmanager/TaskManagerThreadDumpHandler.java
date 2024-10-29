@@ -18,7 +18,6 @@
 
 package org.apache.flink.runtime.rest.handler.taskmanager;
 
-import org.apache.flink.api.common.time.Time;
 import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.resourcemanager.ResourceManagerGateway;
 import org.apache.flink.runtime.rest.handler.HandlerRequest;
@@ -26,15 +25,16 @@ import org.apache.flink.runtime.rest.handler.RestHandlerException;
 import org.apache.flink.runtime.rest.handler.resourcemanager.AbstractResourceManagerHandler;
 import org.apache.flink.runtime.rest.messages.EmptyRequestBody;
 import org.apache.flink.runtime.rest.messages.MessageHeaders;
+import org.apache.flink.runtime.rest.messages.ThreadDumpInfo;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerIdPathParameter;
 import org.apache.flink.runtime.rest.messages.taskmanager.TaskManagerMessageParameters;
-import org.apache.flink.runtime.rest.messages.taskmanager.ThreadDumpInfo;
 import org.apache.flink.runtime.taskexecutor.TaskExecutor;
 import org.apache.flink.runtime.webmonitor.RestfulGateway;
 import org.apache.flink.runtime.webmonitor.retriever.GatewayRetriever;
 
 import javax.annotation.Nonnull;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
@@ -45,7 +45,7 @@ public class TaskManagerThreadDumpHandler
 
     public TaskManagerThreadDumpHandler(
             GatewayRetriever<? extends RestfulGateway> leaderRetriever,
-            Time timeout,
+            Duration timeout,
             Map<String, String> responseHeaders,
             MessageHeaders<EmptyRequestBody, ThreadDumpInfo, TaskManagerMessageParameters>
                     messageHeaders,
@@ -60,7 +60,7 @@ public class TaskManagerThreadDumpHandler
 
     @Override
     protected CompletableFuture<ThreadDumpInfo> handleRequest(
-            @Nonnull HandlerRequest<EmptyRequestBody, TaskManagerMessageParameters> request,
+            @Nonnull HandlerRequest<EmptyRequestBody> request,
             @Nonnull ResourceManagerGateway gateway)
             throws RestHandlerException {
         final ResourceID taskManagerId = request.getPathParameter(TaskManagerIdPathParameter.class);

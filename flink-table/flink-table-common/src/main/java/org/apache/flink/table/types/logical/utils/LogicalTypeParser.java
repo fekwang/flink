@@ -22,6 +22,7 @@ import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.table.api.ValidationException;
 import org.apache.flink.table.catalog.UnresolvedIdentifier;
+import org.apache.flink.table.legacy.utils.TypeStringUtils;
 import org.apache.flink.table.types.logical.ArrayType;
 import org.apache.flink.table.types.logical.BigIntType;
 import org.apache.flink.table.types.logical.BinaryType;
@@ -53,7 +54,6 @@ import org.apache.flink.table.types.logical.VarCharType;
 import org.apache.flink.table.types.logical.YearMonthIntervalType;
 import org.apache.flink.table.types.logical.YearMonthIntervalType.YearMonthResolution;
 import org.apache.flink.table.types.logical.ZonedTimestampType;
-import org.apache.flink.table.utils.TypeStringUtils;
 
 import javax.annotation.Nullable;
 
@@ -112,7 +112,9 @@ public final class LogicalTypeParser {
      *
      * @param typeString a string like "ROW(field1 INT, field2 BOOLEAN)"
      * @throws ValidationException in case of parsing errors.
+     * @deprecated You should use {@link #parse(String, ClassLoader)} to correctly load user types
      */
+    @Deprecated
     public static LogicalType parse(String typeString) {
         return parse(typeString, Thread.currentThread().getContextClassLoader());
     }
@@ -528,7 +530,7 @@ public final class LogicalTypeParser {
                 case VARCHAR:
                     return parseVarCharType();
                 case STRING:
-                    return new VarCharType(VarCharType.MAX_LENGTH);
+                    return VarCharType.STRING_TYPE;
                 case BOOLEAN:
                     return new BooleanType();
                 case BINARY:

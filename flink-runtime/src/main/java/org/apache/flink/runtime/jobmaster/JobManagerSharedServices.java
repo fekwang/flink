@@ -20,10 +20,10 @@ package org.apache.flink.runtime.jobmaster;
 
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.CoreOptions;
+import org.apache.flink.configuration.JobManagerOptions;
 import org.apache.flink.runtime.blob.BlobServer;
 import org.apache.flink.runtime.blob.BlobWriter;
 import org.apache.flink.runtime.execution.librarycache.BlobLibraryCacheManager;
-import org.apache.flink.runtime.execution.librarycache.FlinkUserCodeClassLoaders;
 import org.apache.flink.runtime.execution.librarycache.LibraryCacheManager;
 import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.runtime.shuffle.ShuffleMaster;
@@ -32,12 +32,18 @@ import org.apache.flink.runtime.shuffle.ShuffleMasterContextImpl;
 import org.apache.flink.runtime.shuffle.ShuffleServiceLoader;
 import org.apache.flink.runtime.util.Hardware;
 import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.ExecutorUtils;
+import org.apache.flink.util.FlinkUserCodeClassLoaders;
 import org.apache.flink.util.concurrent.ExecutorThreadFactory;
 
 import javax.annotation.Nonnull;
 
+import java.time.Duration;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
 
@@ -47,7 +53,11 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public class JobManagerSharedServices {
 
-    private final ScheduledExecutorService scheduledExecutorService;
+    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(10);
+
+    private final ScheduledExecutorService futureExecutor;
+
+    private final ExecutorService ioExecutor;
 
     private final LibraryCacheManager libraryCacheManager;
 
@@ -56,19 +66,25 @@ public class JobManagerSharedServices {
     @Nonnull private final BlobWriter blobWriter;
 
     public JobManagerSharedServices(
-            ScheduledExecutorService scheduledExecutorService,
+            ScheduledExecutorService futureExecutor,
+            ExecutorService ioExecutor,
             LibraryCacheManager libraryCacheManager,
             ShuffleMaster<?> shuffleMaster,
             @Nonnull BlobWriter blobWriter) {
 
-        this.scheduledExecutorService = checkNotNull(scheduledExecutorService);
+        this.futureExecutor = checkNotNull(futureExecutor);
+        this.ioExecutor = checkNotNull(ioExecutor);
         this.libraryCacheManager = checkNotNull(libraryCacheManager);
         this.shuffleMaster = checkNotNull(shuffleMaster);
         this.blobWriter = blobWriter;
     }
 
-    public ScheduledExecutorService getScheduledExecutorService() {
-        return scheduledExecutorService;
+    public ScheduledExecutorService getFutureExecutor() {
+        return futureExecutor;
+    }
+
+    public Executor getIoExecutor() {
+        return ioExecutor;
     }
 
     public LibraryCacheManager getLibraryCacheManager() {
@@ -97,7 +113,8 @@ public class JobManagerSharedServices {
         Throwable exception = null;
 
         try {
-            scheduledExecutorService.shutdownNow();
+            ExecutorUtils.gracefulShutdown(
+                    SHUTDOWN_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS, futureExecutor, ioExecutor);
         } catch (Throwable t) {
             exception = t;
         }
@@ -127,16 +144,14 @@ public class JobManagerSharedServices {
         checkNotNull(config);
         checkNotNull(blobServer);
 
-        final String classLoaderResolveOrder =
-                config.getString(CoreOptions.CLASSLOADER_RESOLVE_ORDER);
+        final String classLoaderResolveOrder = config.get(CoreOptions.CLASSLOADER_RESOLVE_ORDER);
 
         final String[] alwaysParentFirstLoaderPatterns =
                 CoreOptions.getParentFirstLoaderPatterns(config);
 
         final boolean failOnJvmMetaspaceOomError =
-                config.getBoolean(CoreOptions.FAIL_ON_USER_CLASS_LOADING_METASPACE_OOM);
-        final boolean checkClassLoaderLeak =
-                config.getBoolean(CoreOptions.CHECK_LEAKED_CLASSLOADER);
+                config.get(CoreOptions.FAIL_ON_USER_CLASS_LOADING_METASPACE_OOM);
+        final boolean checkClassLoaderLeak = config.get(CoreOptions.CHECK_LEAKED_CLASSLOADER);
         final BlobLibraryCacheManager libraryCacheManager =
                 new BlobLibraryCacheManager(
                         blobServer,
@@ -145,12 +160,21 @@ public class JobManagerSharedServices {
                                         classLoaderResolveOrder),
                                 alwaysParentFirstLoaderPatterns,
                                 failOnJvmMetaspaceOomError ? fatalErrorHandler : null,
-                                checkClassLoaderLeak));
+                                checkClassLoaderLeak),
+                        true);
 
+        final int numberCPUCores = Hardware.getNumberCPUCores();
+        final int jobManagerFuturePoolSize =
+                config.get(JobManagerOptions.JOB_MANAGER_FUTURE_POOL_SIZE, numberCPUCores);
         final ScheduledExecutorService futureExecutor =
                 Executors.newScheduledThreadPool(
-                        Hardware.getNumberCPUCores(),
-                        new ExecutorThreadFactory("jobmanager-future"));
+                        jobManagerFuturePoolSize, new ExecutorThreadFactory("jobmanager-future"));
+
+        final int jobManagerIoPoolSize =
+                config.get(JobManagerOptions.JOB_MANAGER_IO_POOL_SIZE, numberCPUCores);
+        final ExecutorService ioExecutor =
+                Executors.newFixedThreadPool(
+                        jobManagerIoPoolSize, new ExecutorThreadFactory("jobmanager-io"));
 
         final ShuffleMasterContext shuffleMasterContext =
                 new ShuffleMasterContextImpl(config, fatalErrorHandler);
@@ -160,6 +184,6 @@ public class JobManagerSharedServices {
         shuffleMaster.start();
 
         return new JobManagerSharedServices(
-                futureExecutor, libraryCacheManager, shuffleMaster, blobServer);
+                futureExecutor, ioExecutor, libraryCacheManager, shuffleMaster, blobServer);
     }
 }

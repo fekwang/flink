@@ -15,32 +15,29 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.apache.flink.table.planner.runtime.stream.sql
 
-import java.util
-
-import org.apache.flink.api.scala._
 import org.apache.flink.table.api.bridge.scala._
 import org.apache.flink.table.catalog.{CatalogPartitionImpl, CatalogPartitionSpec, ObjectPath}
 import org.apache.flink.table.planner.factories.{TestValuesCatalog, TestValuesTableFactory}
 import org.apache.flink.table.planner.runtime.utils.{StreamingTestBase, TestingAppendSink}
 import org.apache.flink.table.planner.runtime.utils.BatchTestBase.row
-import org.apache.flink.types.Row
-import org.junit.Assert._
-import org.junit.{Before, Test}
-import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
+import org.apache.flink.testutils.junit.extensions.parameterized.{ParameterizedTestExtension, Parameters}
+
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.{BeforeEach, TestTemplate}
+import org.junit.jupiter.api.extension.ExtendWith
+
+import java.util
 
 import scala.collection.JavaConversions._
 
-@RunWith(classOf[Parameterized])
-class PartitionableSourceITCase(
-  val sourceFetchPartitions: Boolean,
-  val useCatalogFilter: Boolean) extends StreamingTestBase {
+@ExtendWith(Array(classOf[ParameterizedTestExtension]))
+class PartitionableSourceITCase(val sourceFetchPartitions: Boolean, val useCatalogFilter: Boolean)
+  extends StreamingTestBase {
 
-  @Before
-  override def before() : Unit = {
+  @BeforeEach
+  override def before(): Unit = {
     super.before()
     env.setParallelism(1) // set sink parallelism to 1
     val data = Seq(
@@ -50,11 +47,11 @@ class PartitionableSourceITCase(
       row(4, "Tom", "B", 3),
       row(5, "Vivi", "C", 1)
     )
-    val myTableDataId = TestValuesTableFactory.registerData(data)
+    val dataId = TestValuesTableFactory.registerData(data)
 
-    val ddlTemp =
+    val partitionableTable =
       s"""
-         |CREATE TABLE MyTable (
+         |CREATE TABLE PartitionableTable (
          |  id int,
          |  name string,
          |  part1 string,
@@ -63,42 +60,75 @@ class PartitionableSourceITCase(
          |  partitioned by (part1, part2)
          |  with (
          |    'connector' = 'values',
-         |    'data-id' = '$myTableDataId',
+         |    'data-id' = '$dataId',
          |    'bounded' = 'true',
          |    'partition-list' = '%s'
          |)
          |""".stripMargin
 
+    // test when PushDownFilter can consume all filters including fields partitionKeys
+    val partitionableAndFilterableTable =
+      s"""
+         |CREATE TABLE PartitionableAndFilterableTable (
+         |  id int,
+         |  name string,
+         |  part1 string,
+         |  part2 int,
+         |  virtualField as part2 + 1)
+         |  partitioned by (part1, part2)
+         |  with (
+         |    'connector' = 'values',
+         |    'data-id' = '$dataId',
+         |    'bounded' = 'true',
+         |    'partition-list' = '%s',
+         |    'filterable-fields' = 'id;part1;part2'
+         |)
+         |""".stripMargin
+
     if (sourceFetchPartitions) {
       val partitions = "part1:A,part2:1;part1:A,part2:2;part1:B,part2:3;part1:C,part2:1"
-      tEnv.executeSql(String.format(ddlTemp, partitions))
+      tEnv.executeSql(String.format(partitionableTable, partitions))
+      tEnv.executeSql(String.format(partitionableAndFilterableTable, partitions))
     } else {
       val catalog =
         new TestValuesCatalog("test_catalog", "test_database", useCatalogFilter)
       tEnv.registerCatalog("test_catalog", catalog)
       tEnv.useCatalog("test_catalog")
       // register table without partitions
-      tEnv.executeSql(String.format(ddlTemp, ""))
-      val mytablePath = ObjectPath.fromString("test_database.MyTable")
+      tEnv.executeSql(String.format(partitionableTable, ""))
+      tEnv.executeSql(String.format(partitionableAndFilterableTable, ""))
+      val partitionableTablePath = ObjectPath.fromString("test_database.PartitionableTable")
+      val partitionableAndFilterableTablePath =
+        ObjectPath.fromString("test_database.PartitionableAndFilterableTable")
       // partition map
       val partitions = Seq(
-        Map("part1"->"A", "part2"->"1"),
-        Map("part1"->"A", "part2"->"2"),
-        Map("part1"->"B", "part2"->"3"),
-        Map("part1"->"C", "part2"->"1"))
-      partitions.foreach(partition => {
-        val catalogPartitionSpec = new CatalogPartitionSpec(partition)
-        val catalogPartition = new CatalogPartitionImpl(
-          new java.util.HashMap[String, String](), "")
-        catalog.createPartition(mytablePath, catalogPartitionSpec, catalogPartition, true)
-      })
+        Map("part1" -> "A", "part2" -> "1"),
+        Map("part1" -> "A", "part2" -> "2"),
+        Map("part1" -> "B", "part2" -> "3"),
+        Map("part1" -> "C", "part2" -> "1"))
+      partitions.foreach(
+        partition => {
+          val catalogPartitionSpec = new CatalogPartitionSpec(partition)
+          val catalogPartition =
+            new CatalogPartitionImpl(new java.util.HashMap[String, String](), "")
+          catalog.createPartition(
+            partitionableTablePath,
+            catalogPartitionSpec,
+            catalogPartition,
+            true)
+          catalog.createPartition(
+            partitionableAndFilterableTablePath,
+            catalogPartitionSpec,
+            catalogPartition,
+            true)
+        })
     }
   }
 
-  @Test
+  @TestTemplate
   def testSimplePartitionFieldPredicate1(): Unit = {
-    val query = "SELECT * FROM MyTable WHERE part1 = 'A'"
-    val result = tEnv.sqlQuery(query).toAppendStream[Row]
+    val query = "SELECT * FROM PartitionableTable WHERE part1 = 'A'"
+    val result = tEnv.sqlQuery(query).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -108,13 +138,13 @@ class PartitionableSourceITCase(
       "2,LiSi,A,1,2",
       "3,Jack,A,2,3"
     )
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testPartialPartitionFieldPredicatePushDown(): Unit = {
-    val query = "SELECT * FROM MyTable WHERE (id > 2 OR part1 = 'A') AND part2 > 1"
-    val result = tEnv.sqlQuery(query).toAppendStream[Row]
+    val query = "SELECT * FROM PartitionableTable WHERE (id > 2 OR part1 = 'A') AND part2 > 1"
+    val result = tEnv.sqlQuery(query).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -123,13 +153,13 @@ class PartitionableSourceITCase(
       "3,Jack,A,2,3",
       "4,Tom,B,3,4"
     )
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 
-  @Test
+  @TestTemplate
   def testUnconvertedExpression(): Unit = {
-    val query = "select * from MyTable where trim(part1) = 'A' and part2 > 1"
-    val result = tEnv.sqlQuery(query).toAppendStream[Row]
+    val query = "select * from PartitionableTable where trim(part1) = 'A' and part2 > 1"
+    val result = tEnv.sqlQuery(query).toDataStream
     val sink = new TestingAppendSink
     result.addSink(sink)
     env.execute()
@@ -137,12 +167,42 @@ class PartitionableSourceITCase(
     val expected = Seq(
       "3,Jack,A,2,3"
     )
-    assertEquals(expected.sorted, sink.getAppendResults.sorted)
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
+  }
+
+  @TestTemplate
+  def testPushDownPartitionAndFiltersContainPartitionKeys(): Unit = {
+    val query = "SELECT * FROM PartitionableAndFilterableTable WHERE part1 = 'A' AND id > 1"
+    val result = tEnv.sqlQuery(query).toDataStream
+    val sink = new TestingAppendSink
+    result.addSink(sink)
+    env.execute()
+
+    val expected = Seq(
+      "2,LiSi,A,1,2",
+      "3,Jack,A,2,3"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
+  }
+
+  @TestTemplate
+  def testPushDownPartitionAndFiltersContainPartitionKeysWithSingleProjection(): Unit = {
+    val query = "SELECT name FROM PartitionableAndFilterableTable WHERE part1 = 'A' AND id > 1"
+    val result = tEnv.sqlQuery(query).toDataStream
+    val sink = new TestingAppendSink
+    result.addSink(sink)
+    env.execute()
+
+    val expected = Seq(
+      "LiSi",
+      "Jack"
+    )
+    assertThat(sink.getAppendResults.sorted).isEqualTo(expected.sorted)
   }
 }
 
 object PartitionableSourceITCase {
-  @Parameterized.Parameters(name = "sourceFetchPartitions={0}, useCatalogFilter={1}")
+  @Parameters(name = "sourceFetchPartitions={0}, useCatalogFilter={1}")
   def parameters(): util.Collection[Array[Any]] = {
     Seq[Array[Any]](
       Array(true, false),

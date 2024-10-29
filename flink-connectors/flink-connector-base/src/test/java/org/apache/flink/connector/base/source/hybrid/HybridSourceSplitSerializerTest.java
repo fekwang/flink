@@ -20,33 +20,31 @@ package org.apache.flink.connector.base.source.hybrid;
 
 import org.apache.flink.api.connector.source.Source;
 import org.apache.flink.api.connector.source.mocks.MockSource;
-import org.apache.flink.api.connector.source.mocks.MockSourceSplit;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
 /** Tests for {@link HybridSourceSplitSerializer}. */
-public class HybridSourceSplitSerializerTest {
+class HybridSourceSplitSerializerTest {
 
     @Test
-    public void testSerialization() throws Exception {
+    void testSerialization() throws Exception {
         Map<Integer, Source> switchedSources = new HashMap<>();
         switchedSources.put(0, new MockSource(null, 0));
-        HybridSourceSplitSerializer serializer = new HybridSourceSplitSerializer(switchedSources);
-        HybridSourceSplit split = new HybridSourceSplit(0, new MockSourceSplit(1));
+        byte[] splitBytes = {1, 2, 3};
+        HybridSourceSplitSerializer serializer = new HybridSourceSplitSerializer();
+        HybridSourceSplit split = new HybridSourceSplit(0, splitBytes, 0, "splitId");
         byte[] serialized = serializer.serialize(split);
         HybridSourceSplit clonedSplit = serializer.deserialize(0, serialized);
-        Assert.assertEquals(split, clonedSplit);
+        assertThat(clonedSplit).isEqualTo(split);
 
-        try {
-            serializer.deserialize(1, serialized);
-            Assert.fail();
-        } catch (IOException e) {
-            // expected invalid version
-        }
+        assertThatThrownBy(() -> serializer.deserialize(1, serialized))
+                .isInstanceOf(IOException.class);
     }
 }

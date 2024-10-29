@@ -21,8 +21,10 @@ package org.apache.flink.runtime.operators;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.accumulators.Accumulator;
 import org.apache.flink.api.common.distributions.DataDistribution;
+import org.apache.flink.api.common.functions.DefaultOpenContext;
 import org.apache.flink.api.common.functions.Function;
 import org.apache.flink.api.common.functions.GroupCombineFunction;
+import org.apache.flink.api.common.functions.OpenContext;
 import org.apache.flink.api.common.functions.Partitioner;
 import org.apache.flink.api.common.functions.util.FunctionUtils;
 import org.apache.flink.api.common.typeutils.TypeComparator;
@@ -74,8 +76,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Future;
 
 import static java.util.Collections.emptyList;
 
@@ -188,7 +188,6 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
     protected Map<String, Accumulator<?, ?>> accumulatorMap;
 
     private InternalOperatorMetricGroup metrics;
-    private final CompletableFuture<Void> terminationFuture = new CompletableFuture<>();
 
     // --------------------------------------------------------------------------------------------
     //                                  Constructor
@@ -364,7 +363,6 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
 
             clearReaders(inputReaders);
             clearWriters(eventualOutputs);
-            terminationFuture.complete(null);
         }
 
         if (this.running) {
@@ -379,7 +377,7 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
     }
 
     @Override
-    public Future<Void> cancel() throws Exception {
+    public void cancel() throws Exception {
         this.running = false;
 
         if (LOG.isDebugEnabled()) {
@@ -393,7 +391,6 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
         } finally {
             closeLocalStrategiesAndCaches();
         }
-        return terminationFuture;
     }
 
     // --------------------------------------------------------------------------------------------
@@ -505,7 +502,7 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
             if (this.stub != null) {
                 try {
                     Configuration stubConfig = this.config.getStubParameters();
-                    FunctionUtils.openFunction(this.stub, stubConfig);
+                    FunctionUtils.openFunction(this.stub, DefaultOpenContext.INSTANCE);
                     stubOpen = true;
                 } catch (Throwable t) {
                     throw new Exception(
@@ -1143,14 +1140,14 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
         Environment env = getEnvironment();
 
         return new DistributedRuntimeUDFContext(
+                env.getJobInfo(),
                 env.getTaskInfo(),
                 env.getUserCodeClassLoader(),
                 getExecutionConfig(),
                 env.getDistributedCacheEntries(),
                 this.accumulatorMap,
                 metrics,
-                env.getExternalResourceInfoProvider(),
-                env.getJobID());
+                env.getExternalResourceInfoProvider());
     }
 
     // --------------------------------------------------------------------------------------------
@@ -1386,7 +1383,8 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
             final RecordWriter<SerializationDelegate<T>> recordWriter =
                     new RecordWriterBuilder()
                             .setChannelSelector(oe)
-                            .setTaskName(task.getEnvironment().getTaskInfo().getTaskName())
+                            .setTaskName(
+                                    task.getEnvironment().getTaskInfo().getTaskNameWithSubtasks())
                             .build(task.getEnvironment().getWriter(outputOffset + i));
 
             recordWriter.setMetricGroup(task.getEnvironment().getMetricGroup().getIOMetricGroup());
@@ -1485,7 +1483,7 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
 
     /**
      * Opens the given stub using its {@link
-     * org.apache.flink.api.common.functions.RichFunction#open(Configuration)} method. If the open
+     * org.apache.flink.api.common.functions.RichFunction#open(OpenContext)} method. If the open
      * call produces an exception, a new exception with a standard error message is created, using
      * the encountered exception as its cause.
      *
@@ -1495,10 +1493,10 @@ public class BatchTask<S extends Function, OT> extends AbstractInvokable
      */
     public static void openUserCode(Function stub, Configuration parameters) throws Exception {
         try {
-            FunctionUtils.openFunction(stub, parameters);
+            FunctionUtils.openFunction(stub, DefaultOpenContext.INSTANCE);
         } catch (Throwable t) {
             throw new Exception(
-                    "The user defined 'open(Configuration)' method in "
+                    "The user defined 'open(OpenContext)' method in "
                             + stub.getClass().toString()
                             + " caused an exception: "
                             + t.getMessage(),

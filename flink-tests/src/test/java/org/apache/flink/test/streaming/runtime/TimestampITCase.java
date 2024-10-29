@@ -20,6 +20,14 @@ package org.apache.flink.test.streaming.runtime;
 
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.api.common.JobStatus;
+import org.apache.flink.api.common.eventtime.AscendingTimestampsWatermarks;
+import org.apache.flink.api.common.eventtime.NoWatermarksGenerator;
+import org.apache.flink.api.common.eventtime.TimestampAssigner;
+import org.apache.flink.api.common.eventtime.TimestampAssignerSupplier;
+import org.apache.flink.api.common.eventtime.WatermarkGenerator;
+import org.apache.flink.api.common.eventtime.WatermarkGeneratorSupplier;
+import org.apache.flink.api.common.eventtime.WatermarkOutput;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
 import org.apache.flink.api.common.functions.MapFunction;
 import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.common.typeinfo.BasicTypeInfo;
@@ -28,36 +36,33 @@ import org.apache.flink.client.program.ClusterClient;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.configuration.MemorySize;
 import org.apache.flink.configuration.TaskManagerOptions;
+import org.apache.flink.core.execution.SavepointFormatType;
 import org.apache.flink.core.testutils.MultiShotLatch;
 import org.apache.flink.runtime.checkpoint.CheckpointException;
 import org.apache.flink.runtime.checkpoint.CheckpointFailureReason;
 import org.apache.flink.runtime.client.JobStatusMessage;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
-import org.apache.flink.streaming.api.TimeCharacteristic;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
-import org.apache.flink.streaming.api.functions.AssignerWithPeriodicWatermarks;
-import org.apache.flink.streaming.api.functions.AssignerWithPunctuatedWatermarks;
 import org.apache.flink.streaming.api.functions.co.CoMapFunction;
-import org.apache.flink.streaming.api.functions.sink.DiscardingSink;
-import org.apache.flink.streaming.api.functions.source.SourceFunction;
-import org.apache.flink.streaming.api.functions.timestamps.AscendingTimestampExtractor;
+import org.apache.flink.streaming.api.functions.sink.v2.DiscardingSink;
+import org.apache.flink.streaming.api.functions.source.legacy.SourceFunction;
 import org.apache.flink.streaming.api.operators.AbstractStreamOperator;
-import org.apache.flink.streaming.api.operators.ChainingStrategy;
 import org.apache.flink.streaming.api.operators.OneInputStreamOperator;
 import org.apache.flink.streaming.api.watermark.Watermark;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
-import org.apache.flink.streaming.api.windowing.time.Time;
 import org.apache.flink.streaming.runtime.streamrecord.StreamRecord;
 import org.apache.flink.test.util.MiniClusterWithClientResource;
 import org.apache.flink.util.ExceptionUtils;
 import org.apache.flink.util.TestLogger;
+import org.apache.flink.util.function.SerializableFunction;
 
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.ClassRule;
 import org.junit.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -131,7 +136,7 @@ public class TimestampITCase extends TestLogger {
                 .connect(source2)
                 .map(new IdentityCoMap())
                 .transform("Custom Operator", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true))
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<>());
 
         env.execute();
 
@@ -157,6 +162,25 @@ public class TimestampITCase extends TestLogger {
                     CustomOperator.finalWatermarks[i].get(
                             CustomOperator.finalWatermarks[i].size() - 1));
         }
+    }
+
+    @Test
+    public void testSelfUnionWatermarkPropagation() throws Exception {
+        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
+        env.setParallelism(1);
+        DataStream<Integer> dataStream1 = env.fromData(1, 2, 3);
+
+        dataStream1
+                .union(dataStream1)
+                .transform(
+                        "Custom Operator", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(false))
+                .sinkTo(new DiscardingSink<>());
+        env.execute();
+
+        assertEquals(
+                Watermark.MAX_WATERMARK,
+                CustomOperator.finalWatermarks[0].get(
+                        CustomOperator.finalWatermarks[0].size() - 1));
     }
 
     @Test
@@ -186,7 +210,7 @@ public class TimestampITCase extends TestLogger {
                 .connect(source2)
                 .map(new IdentityCoMap())
                 .transform("Custom Operator", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true))
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<Integer>());
 
         Thread t =
                 new Thread("stopper") {
@@ -202,11 +226,17 @@ public class TimestampITCase extends TestLogger {
 
                             JobID id = running.get(0);
 
-                            waitUntilAllTasksAreRunning(CLUSTER.getRestAddres(), id);
+                            waitUntilAllTasksAreRunning(CLUSTER.getRestClusterClient(), id);
                             // send stop until the job is stopped
                             do {
                                 try {
-                                    clusterClient.stopWithSavepoint(id, false, "test").get();
+                                    clusterClient
+                                            .stopWithSavepoint(
+                                                    id,
+                                                    false,
+                                                    "test",
+                                                    SavepointFormatType.CANONICAL)
+                                            .get();
                                 } catch (Exception e) {
                                     boolean ignoreException =
                                             ExceptionUtils.findThrowable(
@@ -283,7 +313,7 @@ public class TimestampITCase extends TestLogger {
                         "Custom Operator",
                         BasicTypeInfo.INT_TYPE_INFO,
                         new TimestampCheckingOperator())
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<Integer>());
 
         env.execute();
     }
@@ -309,7 +339,7 @@ public class TimestampITCase extends TestLogger {
                         "Custom Operator",
                         BasicTypeInfo.INT_TYPE_INFO,
                         new DisabledTimestampCheckingOperator())
-                .addSink(new DiscardingSink<Integer>());
+                .sinkTo(new DiscardingSink<Integer>());
 
         env.execute();
     }
@@ -346,12 +376,7 @@ public class TimestampITCase extends TestLogger {
 
         DataStream<Integer> extractOp =
                 source1.assignTimestampsAndWatermarks(
-                        new AscendingTimestampExtractor<Integer>() {
-                            @Override
-                            public long extractAscendingTimestamp(Integer element) {
-                                return element;
-                            }
-                        });
+                        AscendingRecordTimestampsWatermarkStrategy.create(Long::valueOf));
 
         extractOp
                 .transform("Watermark Check", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true))
@@ -419,17 +444,30 @@ public class TimestampITCase extends TestLogger {
                         });
 
         source1.assignTimestampsAndWatermarks(
-                        new AssignerWithPunctuatedWatermarks<Integer>() {
-
+                        new WatermarkStrategy<Integer>() {
                             @Override
-                            public long extractTimestamp(Integer element, long currentTimestamp) {
-                                return element;
+                            public TimestampAssigner<Integer> createTimestampAssigner(
+                                    TimestampAssignerSupplier.Context context) {
+                                return (element, recordTimestamp) -> element;
                             }
 
                             @Override
-                            public Watermark checkAndGetNextWatermark(
-                                    Integer element, long extractedTimestamp) {
-                                return new Watermark(extractedTimestamp - 1);
+                            public WatermarkGenerator<Integer> createWatermarkGenerator(
+                                    WatermarkGeneratorSupplier.Context context) {
+                                return new WatermarkGenerator<Integer>() {
+                                    @Override
+                                    public void onEvent(
+                                            Integer event,
+                                            long eventTimestamp,
+                                            WatermarkOutput output) {
+                                        output.emitWatermark(
+                                                new org.apache.flink.api.common.eventtime.Watermark(
+                                                        eventTimestamp - 1));
+                                    }
+
+                                    @Override
+                                    public void onPeriodicEmit(WatermarkOutput output) {}
+                                };
                             }
                         })
                 .transform("Watermark Check", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true))
@@ -484,17 +522,30 @@ public class TimestampITCase extends TestLogger {
                         });
 
         source1.assignTimestampsAndWatermarks(
-                        new AssignerWithPunctuatedWatermarks<Integer>() {
-
+                        new WatermarkStrategy<Integer>() {
                             @Override
-                            public long extractTimestamp(Integer element, long previousTimestamp) {
-                                return element;
+                            public TimestampAssigner<Integer> createTimestampAssigner(
+                                    TimestampAssignerSupplier.Context context) {
+                                return (element, recordTimestamp) -> element;
                             }
 
                             @Override
-                            public Watermark checkAndGetNextWatermark(
-                                    Integer element, long extractedTimestamp) {
-                                return new Watermark(extractedTimestamp - 1);
+                            public WatermarkGenerator<Integer> createWatermarkGenerator(
+                                    WatermarkGeneratorSupplier.Context context) {
+                                return new WatermarkGenerator<Integer>() {
+                                    @Override
+                                    public void onEvent(
+                                            Integer event,
+                                            long eventTimestamp,
+                                            WatermarkOutput output) {
+                                        output.emitWatermark(
+                                                new org.apache.flink.api.common.eventtime.Watermark(
+                                                        eventTimestamp - 1));
+                                    }
+
+                                    @Override
+                                    public void onPeriodicEmit(WatermarkOutput output) {}
+                                };
                             }
                         })
                 .transform("Watermark Check", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true))
@@ -553,19 +604,7 @@ public class TimestampITCase extends TestLogger {
                         });
 
         source1.assignTimestampsAndWatermarks(
-                        new AssignerWithPunctuatedWatermarks<Integer>() {
-
-                            @Override
-                            public long extractTimestamp(Integer element, long currentTimestamp) {
-                                return element;
-                            }
-
-                            @Override
-                            public Watermark checkAndGetNextWatermark(
-                                    Integer element, long extractedTimestamp) {
-                                return null;
-                            }
-                        })
+                        (WatermarkStrategy<Integer>) context -> new NoWatermarksGenerator<>())
                 .transform(
                         "Watermark Check", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true));
 
@@ -615,18 +654,7 @@ public class TimestampITCase extends TestLogger {
                         });
 
         source1.assignTimestampsAndWatermarks(
-                        new AssignerWithPeriodicWatermarks<Integer>() {
-
-                            @Override
-                            public long extractTimestamp(Integer element, long currentTimestamp) {
-                                return element;
-                            }
-
-                            @Override
-                            public Watermark getCurrentWatermark() {
-                                return null;
-                            }
-                        })
+                        (WatermarkStrategy<Integer>) context -> new NoWatermarksGenerator<>())
                 .transform(
                         "Watermark Check", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(true));
 
@@ -637,44 +665,17 @@ public class TimestampITCase extends TestLogger {
                 CustomOperator.finalWatermarks[0].get(0).getTimestamp() == Long.MAX_VALUE);
     }
 
-    /**
-     * This verifies that an event time source works when setting stream time characteristic to
-     * processing time. In this case, the watermarks should just be swallowed apart from the last
-     * final watermark marking the end of time.
-     */
-    @Test
-    public void testEventTimeSourceWithProcessingTime() throws Exception {
-        StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
-        env.setParallelism(2);
-        env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
-
-        DataStream<Integer> source1 = env.addSource(new MyTimestampSource(0, 10));
-
-        source1.map(new IdentityMap())
-                .transform(
-                        "Watermark Check", BasicTypeInfo.INT_TYPE_INFO, new CustomOperator(false));
-
-        env.execute();
-
-        // verify that we don't get any watermarks, the source is used as watermark source in
-        // other tests, so it normally emits watermarks
-        Assert.assertTrue(CustomOperator.finalWatermarks[0].size() == 1);
-        Assert.assertEquals(Watermark.MAX_WATERMARK, CustomOperator.finalWatermarks[0].get(0));
-    }
-
     @Test
     public void testErrorOnEventTimeOverProcessingTime() {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
         env.setParallelism(2);
-        env.setStreamTimeCharacteristic(TimeCharacteristic.ProcessingTime);
 
         DataStream<Tuple2<String, Integer>> source1 =
-                env.fromElements(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
+                env.fromData(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
 
-        source1.keyBy(0)
-                .window(TumblingEventTimeWindows.of(Time.seconds(5)))
+        source1.keyBy(x -> x.f0)
+                .window(TumblingEventTimeWindows.of(Duration.ofSeconds(5)))
                 .reduce(
                         new ReduceFunction<Tuple2<String, Integer>>() {
                             @Override
@@ -701,10 +702,10 @@ public class TimestampITCase extends TestLogger {
         env.setParallelism(2);
 
         DataStream<Tuple2<String, Integer>> source1 =
-                env.fromElements(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
+                env.fromData(new Tuple2<>("a", 1), new Tuple2<>("b", 2));
 
-        source1.keyBy(0)
-                .window(TumblingEventTimeWindows.of(Time.seconds(5)))
+        source1.keyBy(x -> x.f0)
+                .window(TumblingEventTimeWindows.of(Duration.ofSeconds(5)))
                 .reduce(
                         new ReduceFunction<Tuple2<String, Integer>>() {
                             @Override
@@ -737,7 +738,6 @@ public class TimestampITCase extends TestLogger {
         private final boolean timestampsEnabled;
 
         public CustomOperator(boolean timestampsEnabled) {
-            setChainingStrategy(ChainingStrategy.ALWAYS);
             this.timestampsEnabled = timestampsEnabled;
         }
 
@@ -772,16 +772,14 @@ public class TimestampITCase extends TestLogger {
         @Override
         public void close() throws Exception {
             super.close();
-            finalWatermarks[getRuntimeContext().getIndexOfThisSubtask()] = watermarks;
+            finalWatermarks[getRuntimeContext().getTaskInfo().getIndexOfThisSubtask()] = watermarks;
         }
     }
 
     private static class TimestampCheckingOperator extends AbstractStreamOperator<Integer>
             implements OneInputStreamOperator<Integer, Integer> {
 
-        public TimestampCheckingOperator() {
-            setChainingStrategy(ChainingStrategy.ALWAYS);
-        }
+        public TimestampCheckingOperator() {}
 
         @Override
         public void processElement(StreamRecord<Integer> element) throws Exception {
@@ -900,5 +898,32 @@ public class TimestampITCase extends TestLogger {
                 .filter(status -> status.getJobState() == JobStatus.RUNNING)
                 .map(JobStatusMessage::getJobId)
                 .collect(Collectors.toList());
+    }
+
+    public static class AscendingRecordTimestampsWatermarkStrategy<T>
+            implements WatermarkStrategy<T> {
+        private final SerializableFunction<T, Long> timestampExtractor;
+
+        public AscendingRecordTimestampsWatermarkStrategy(
+                SerializableFunction<T, Long> timestampExtractor) {
+            this.timestampExtractor = timestampExtractor;
+        }
+
+        public static <T> AscendingRecordTimestampsWatermarkStrategy<T> create(
+                SerializableFunction<T, Long> timestampExtractor) {
+            return new AscendingRecordTimestampsWatermarkStrategy<>(timestampExtractor);
+        }
+
+        @Override
+        public WatermarkGenerator<T> createWatermarkGenerator(
+                WatermarkGeneratorSupplier.Context context) {
+            return new AscendingTimestampsWatermarks<>();
+        }
+
+        @Override
+        public TimestampAssigner<T> createTimestampAssigner(
+                TimestampAssignerSupplier.Context context) {
+            return (event, ignore) -> timestampExtractor.apply(event);
+        }
     }
 }

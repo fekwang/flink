@@ -28,19 +28,21 @@ process mode. It downloads and installs users' python artifacts, then launches t
 harness of Apache Beam.
 """
 import argparse
-import os
-from subprocess import call
-
-import grpc
 import logging
+import os
 import sys
 
-from apache_beam.portability.api.beam_fn_api_pb2_grpc import BeamFnExternalWorkerPoolStub
-from apache_beam.portability.api.beam_fn_api_pb2 import StartWorkerRequest
-from apache_beam.portability.api.beam_provision_api_pb2_grpc import ProvisionServiceStub
-from apache_beam.portability.api.beam_provision_api_pb2 import GetProvisionInfoRequest
-from apache_beam.portability.api.endpoints_pb2 import ApiServiceDescriptor
-
+import grpc
+from apache_beam.portability.api.org.apache.beam.model.fn_execution.v1.beam_fn_api_pb2 import \
+    StartWorkerRequest
+from apache_beam.portability.api.org.apache.beam.model.fn_execution.v1.beam_fn_api_pb2_grpc import (
+    BeamFnExternalWorkerPoolStub)
+from apache_beam.portability.api.org.apache.beam.model.fn_execution.v1.beam_provision_api_pb2 \
+    import GetProvisionInfoRequest
+from apache_beam.portability.api.org.apache.beam.model.fn_execution.v1.beam_provision_api_pb2_grpc \
+    import ProvisionServiceStub
+from apache_beam.portability.api.org.apache.beam.model.pipeline.v1.endpoints_pb2 import (
+    ApiServiceDescriptor)
 from google.protobuf import json_format, text_format
 
 
@@ -74,19 +76,24 @@ if __name__ == "__main__":
     check_not_empty(worker_id, "No id provided.")
     check_not_empty(provision_endpoint, "No provision endpoint provided.")
 
-    logging.info("Initializing python harness: %s" % " ".join(sys.argv))
+    logging.info("Initializing Python harness: %s" % " ".join(sys.argv))
 
-    if 'loopback.server.address' in os.environ:
+    if 'PYTHON_LOOPBACK_SERVER_ADDRESS' in os.environ:
+        logging.info("Starting up Python harness in loopback mode.")
+
         params = dict(os.environ)
         params.update({'SEMI_PERSISTENT_DIRECTORY': semi_persist_dir})
-        with grpc.insecure_channel(os.environ['loopback.server.address']) as channel:
+        with grpc.insecure_channel(os.environ['PYTHON_LOOPBACK_SERVER_ADDRESS']) as channel:
             client = BeamFnExternalWorkerPoolStub(channel=channel)
             request = StartWorkerRequest(
                 worker_id=worker_id,
                 provision_endpoint=ApiServiceDescriptor(url=provision_endpoint),
                 params=params)
-            client.StartWorker(request)
+            response = client.StartWorker(request)
+            if response.error:
+                raise RuntimeError("Error starting worker: %s" % response.error)
     else:
+        logging.info("Starting up Python harness in a standalone process.")
         metadata = [("worker_id", worker_id)]
 
         # read job information from provision stub
@@ -108,7 +115,9 @@ if __name__ == "__main__":
         env = dict(os.environ)
 
         if "FLINK_BOOT_TESTING" in os.environ and os.environ["FLINK_BOOT_TESTING"] == "1":
+            logging.info("Shut down Python harness due to FLINK_BOOT_TESTING is set.")
             exit(0)
 
-        call([python_exec, "-m", "pyflink.fn_execution.beam.beam_sdk_worker_main"],
-             stdout=sys.stdout, stderr=sys.stderr, env=env)
+        from pyflink.fn_execution.beam import beam_sdk_worker_main
+
+        beam_sdk_worker_main.main()

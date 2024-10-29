@@ -26,6 +26,9 @@ import org.apache.flink.streaming.api.functions.source.datagen.DataGenerator;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 
+import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
+
 /** Data generator for Flink's internal {@link RowData} type. */
 @Internal
 public class RowDataGenerator implements DataGenerator<RowData> {
@@ -33,11 +36,14 @@ public class RowDataGenerator implements DataGenerator<RowData> {
     private static final long serialVersionUID = 1L;
 
     private final DataGenerator<?>[] fieldGenerators;
-    private final String[] fieldNames;
+    private final List<String> fieldNames;
+    private final float nullRate;
 
-    public RowDataGenerator(DataGenerator<?>[] fieldGenerators, String[] fieldNames) {
+    public RowDataGenerator(
+            DataGenerator<?>[] fieldGenerators, List<String> fieldNames, float nullRate) {
         this.fieldGenerators = fieldGenerators;
         this.fieldNames = fieldNames;
+        this.nullRate = nullRate;
     }
 
     @Override
@@ -45,7 +51,7 @@ public class RowDataGenerator implements DataGenerator<RowData> {
             String name, FunctionInitializationContext context, RuntimeContext runtimeContext)
             throws Exception {
         for (int i = 0; i < fieldGenerators.length; i++) {
-            fieldGenerators[i].open(fieldNames[i], context, runtimeContext);
+            fieldGenerators[i].open(fieldNames.get(i), context, runtimeContext);
         }
     }
 
@@ -68,10 +74,13 @@ public class RowDataGenerator implements DataGenerator<RowData> {
 
     @Override
     public RowData next() {
-        GenericRowData row = new GenericRowData(fieldNames.length);
-        for (int i = 0; i < fieldGenerators.length; i++) {
-            row.setField(i, fieldGenerators[i].next());
+        if (nullRate == 0f || ThreadLocalRandom.current().nextFloat() > nullRate) {
+            GenericRowData row = new GenericRowData(fieldNames.size());
+            for (int i = 0; i < fieldGenerators.length; i++) {
+                row.setField(i, fieldGenerators[i].next());
+            }
+            return row;
         }
-        return row;
+        return null;
     }
 }

@@ -19,6 +19,7 @@
 package org.apache.flink.contrib.streaming.state;
 
 import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.runtime.execution.CancelTaskException;
 import org.apache.flink.util.IOUtils;
 import org.apache.flink.util.Preconditions;
 
@@ -32,6 +33,10 @@ import javax.annotation.Nonnegative;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import java.io.Closeable;
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * It's a wrapper class around RocksDB's {@link WriteBatch} for writing in bulk.
  *
@@ -44,6 +49,9 @@ public class RocksDBWriteBatchWrapper implements AutoCloseable {
     private static final int PER_RECORD_BYTES = 100;
     // default 0 for disable memory size based flush
     private static final long DEFAULT_BATCH_SIZE = 0;
+    private static final int DEFAULT_CANCELLATION_CHECK_INTERVAL = MIN_CAPACITY;
+    private static final int DEFAULT_CANCELLATION_CHECK_INTERVAL_BYTES =
+            DEFAULT_CANCELLATION_CHECK_INTERVAL * PER_RECORD_BYTES;
 
     private final RocksDB db;
 
@@ -54,6 +62,17 @@ public class RocksDBWriteBatchWrapper implements AutoCloseable {
     private final int capacity;
 
     @Nonnegative private final long batchSize;
+
+    /** List of all objects that we need to close in close(). */
+    private final List<AutoCloseable> toClose;
+
+    private volatile boolean cancelled;
+
+    private final int cancellationCheckInterval;
+
+    private final long cancellationCheckIntervalBytes;
+
+    private long lastCancellationCheckBatchSize = 0L;
 
     public RocksDBWriteBatchWrapper(@Nonnull RocksDB rocksDB, long writeBatchSize) {
         this(rocksDB, null, 500, writeBatchSize);
@@ -73,15 +92,31 @@ public class RocksDBWriteBatchWrapper implements AutoCloseable {
             @Nullable WriteOptions options,
             int capacity,
             long batchSize) {
+        this(
+                rocksDB,
+                options,
+                capacity,
+                batchSize,
+                DEFAULT_CANCELLATION_CHECK_INTERVAL,
+                DEFAULT_CANCELLATION_CHECK_INTERVAL_BYTES);
+    }
+
+    public RocksDBWriteBatchWrapper(
+            @Nonnull RocksDB rocksDB,
+            @Nullable WriteOptions options,
+            int capacity,
+            long batchSize,
+            int cancellationCheckInterval,
+            long cancellationCheckIntervalBytes) {
         Preconditions.checkArgument(
                 capacity >= MIN_CAPACITY && capacity <= MAX_CAPACITY,
                 "capacity should be between " + MIN_CAPACITY + " and " + MAX_CAPACITY);
         Preconditions.checkArgument(batchSize >= 0, "Max batch size have to be no negative.");
 
         this.db = rocksDB;
-        this.options = options;
         this.capacity = capacity;
         this.batchSize = batchSize;
+        this.toClose = new ArrayList<>(2);
         if (this.batchSize > 0) {
             this.batch =
                     new WriteBatch(
@@ -89,46 +124,81 @@ public class RocksDBWriteBatchWrapper implements AutoCloseable {
         } else {
             this.batch = new WriteBatch(this.capacity * PER_RECORD_BYTES);
         }
+        this.toClose.add(this.batch);
+        if (options != null) {
+            this.options = options;
+        } else {
+            // Use default write options with disabled WAL
+            this.options = new WriteOptions().setDisableWAL(true);
+            // We own this object, so we must ensure that we close it.
+            this.toClose.add(this.options);
+        }
+        this.cancellationCheckInterval = cancellationCheckInterval;
+        this.cancellationCheckIntervalBytes = cancellationCheckIntervalBytes;
     }
 
     public void put(@Nonnull ColumnFamilyHandle handle, @Nonnull byte[] key, @Nonnull byte[] value)
             throws RocksDBException {
+        maybeEnsureNotCancelled();
 
         batch.put(handle, key, value);
 
         flushIfNeeded();
     }
 
+    private void maybeEnsureNotCancelled() {
+        if (batch.count() % cancellationCheckInterval == 0
+                || batch.getDataSize() - lastCancellationCheckBatchSize
+                        >= cancellationCheckIntervalBytes) {
+            ensureNotCancelled();
+        }
+    }
+
     public void remove(@Nonnull ColumnFamilyHandle handle, @Nonnull byte[] key)
             throws RocksDBException {
 
-        batch.remove(handle, key);
+        batch.delete(handle, key);
 
         flushIfNeeded();
     }
 
     public void flush() throws RocksDBException {
-        if (options != null) {
-            db.write(options, batch);
-        } else {
-            // use the default WriteOptions, if wasn't provided.
-            try (WriteOptions writeOptions = new WriteOptions()) {
-                db.write(writeOptions, batch);
-            }
-        }
+        ensureNotCancelled();
+        db.write(options, batch);
         batch.clear();
+        lastCancellationCheckBatchSize = 0;
     }
 
-    public WriteOptions getOptions() {
+    @VisibleForTesting
+    WriteOptions getOptions() {
         return options;
+    }
+
+    public void markCancelled() {
+        this.cancelled = true;
+    }
+
+    public Closeable getCancelCloseable() {
+        return this::markCancelled;
     }
 
     @Override
     public void close() throws RocksDBException {
-        if (batch.count() != 0) {
-            flush();
+        try {
+            ensureNotCancelled();
+            if (batch.count() != 0) {
+                flush();
+            }
+        } finally {
+            IOUtils.closeAllQuietly(toClose);
         }
-        IOUtils.closeQuietly(batch);
+    }
+
+    private void ensureNotCancelled() {
+        if (cancelled) {
+            throw new CancelTaskException();
+        }
+        lastCancellationCheckBatchSize = batch.getDataSize();
     }
 
     private void flushIfNeeded() throws RocksDBException {

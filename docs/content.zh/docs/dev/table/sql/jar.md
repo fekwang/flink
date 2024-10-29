@@ -1,9 +1,9 @@
 ---
-title: "JAR Statements"
+title: "JAR 语句"
 weight: 16
 type: docs
 aliases:
-  - /dev/table/sql/jar.html
+  - /zh/dev/table/sql/jar.html
 ---
 <!--
 Licensed to the Apache Software Foundation (ASF) under one
@@ -24,25 +24,25 @@ specific language governing permissions and limitations
 under the License.
 -->
 
-# JAR Statements
+<a name="jar-statements"></a>
 
-JAR statements are used to add user jars into the classpath or remove user jars from the classpath
-or show added jars in the classpath in the runtime.
+# JAR 语句
 
-Flink SQL supports the following JAR statements for now:
+JAR 语句用于将用户 jar 添加到 classpath、或将用户 jar 从 classpath 中删除或展示运行时 classpath 中添加的 jar。
+
+目前 Flink SQL 支持以下 JAR 语句：
 - ADD JAR
-- REMOVE JAR
 - SHOW JARS
+- REMOVE JAR
 
-<span class="label label-danger">Attention</span> JAR statements only work in the [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}).
+<a name="run-a-jar-statement"></a>
 
-
-## Run a JAR statement
+## 执行 JAR 语句
 
 {{< tabs "add jar statement" >}}
 {{< tab "SQL CLI" >}}
 
-The following examples show how to run `JAR` statements in [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}).
+以下示例展示了如何在 [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}}) 中运行 JAR 语句。
 
 {{< /tab >}}
 {{< /tabs >}}
@@ -51,10 +51,18 @@ The following examples show how to run `JAR` statements in [SQL CLI]({{< ref "do
 {{< tab "SQL CLI" >}}
 ```sql
 Flink SQL> ADD JAR '/path/hello.jar';
-[INFO] The specified jar is added into session classloader.
+[INFO] Execute statement succeeded.
+
+Flink SQL> ADD JAR 'hdfs:///udf/common-udf.jar';
+[INFO] Execute statement succeeded.
 
 Flink SQL> SHOW JARS;
-/path/hello.jar
++----------------------------+
+|                       jars |
++----------------------------+
+|            /path/hello.jar |
+| hdfs:///udf/common-udf.jar |
++----------------------------+
 
 Flink SQL> REMOVE JAR '/path/hello.jar';
 [INFO] The specified jar is removed from session classloader.
@@ -62,21 +70,21 @@ Flink SQL> REMOVE JAR '/path/hello.jar';
 {{< /tab >}}
 {{< /tabs >}}
 
+<a name="add-jar"></a>
+
 ## ADD JAR
 
 ```sql
 ADD JAR '<path_to_filename>.jar'
 ```
 
-Currently it only supports to add the local jar into the session classloader.
+添加一个 JAR 文件到资源列表中，该 jar 应该位于 Flink 当前支持的本地或远程[文件系统]({{< ref "docs/deployment/filesystems/overview" >}}) 中。添加的 JAR 文件可以使用 [`SHOW JARS`](#show-jars) 语句列出。
 
-## REMOVE JAR
+### 限制
 
-```sql
-REMOVE JAR '<path_to_filename>.jar'
-```
+请不要通过 `ADD JAR` 语句来加载 Hive 的source、sink、function、catalog。这是 Hive connector 的一个已知限制，且会在将来版本中修复。当前，建议跟随这个指南来[安装 Hive 的集成]({{< ref "docs/connectors/table/hive/overview" >}}#dependencies)。
 
-Currently it only supports to remove the jar that is added by the [`ADD JAR`](#add-jar) statements.
+<a name="show-jars"></a>
 
 ## SHOW JARS
 
@@ -84,6 +92,18 @@ Currently it only supports to remove the jar that is added by the [`ADD JAR`](#a
 SHOW JARS
 ```
 
-Show all added jars in the session classloader which are added by [`ADD JAR`](#add-jar) statements.
+展示所有通过 [`ADD JAR`](#add-jar) 语句添加的 jar。
+
+<a name="remove-jar"></a>
+
+## REMOVE JAR
+
+```sql
+REMOVE JAR '<path_to_filename>.jar'
+```
+
+删除由 [`ADD JAR`](#add-jar) 语句添加的指定 jar。
+
+<span class="label label-danger">注意</span> REMOVE JAR 语句仅适用于 [SQL CLI]({{< ref "docs/dev/table/sqlClient" >}})。
 
 {{< top >}}
